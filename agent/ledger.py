@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.config import get_env
+from agent.config import get_env, project_root
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS opportunities (
@@ -111,7 +111,18 @@ def _utcnow() -> str:
 
 
 def db_path() -> Path:
-    path = Path(get_env("DB_PATH", "data/agent.db"))
+    """Путь к базе. Относительный путь считается от корня проекта, не от cwd.
+
+    Раньше путь по умолчанию был относительным, и запуск из другого каталога
+    создавал рядом вторую пустую базу: ферма выглядела пустой, а история часов и
+    выплат оставалась в первой. Так же в рабочую базу попадали записи тестов,
+    если pytest запускали не из корня. Тесты подменяют корень проекта на
+    временный каталог, поэтому теперь и база тестов уезжает вместе с ним.
+    """
+    raw = str(get_env("DB_PATH", "") or "").strip()
+    path = Path(raw).expanduser() if raw else Path("data") / "agent.db"
+    if not path.is_absolute():
+        path = project_root() / path
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

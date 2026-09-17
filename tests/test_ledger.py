@@ -70,3 +70,49 @@ def test_run_history() -> None:
     data = ledger.summary()
     assert data["runs"][0]["found"] == 12
     assert data["channels"][0]["channel"] == "github_bounties"
+
+
+# --- путь к базе: от корня проекта, а не от текущего каталога ------------------
+
+def test_relative_db_path_follows_the_project_root(tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    """Запуск из чужого каталога раньше создавал рядом вторую пустую базу.
+
+    Из-за этого ферма «теряла» историю часов и выплат, а тесты, запущенные не из
+    корня, писали свои выдуманные задачи прямо в рабочую базу.
+    """
+    monkeypatch.delenv("DB_PATH", raising=False)
+    elsewhere = tmp_path / "another-place"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    resolved = ledger.db_path()
+    assert resolved.is_absolute()
+    assert resolved.name == "agent.db"
+    assert not (elsewhere / "data").exists(), "база не должна появляться рядом с cwd"
+    assert ledger.project_root() in resolved.parents
+
+
+def test_relative_db_path_from_env_is_also_project_relative(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_PATH", "data/custom.db")
+    monkeypatch.chdir(tmp_path)
+    resolved = ledger.db_path()
+    assert resolved == ledger.project_root() / "data" / "custom.db"
+
+
+def test_absolute_db_path_is_respected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "probe.db"
+    monkeypatch.setenv("DB_PATH", str(target))
+    assert ledger.db_path() == target
+
+
+def test_tests_never_touch_the_live_database() -> None:
+    """Общий conftest подменяет корень проекта — база тестов едет вместе с ним.
+
+    Именно эта проверка поймала бы исходную поломку: раньше тесты писали
+    выдуманные задачи в рабочую базу, и робот показывал их как настоящие.
+    """
+    live = Path(__file__).resolve().parent.parent / "data" / "agent.db"
+    assert ledger.db_path() != live
+    assert live not in ledger.db_path().parents
