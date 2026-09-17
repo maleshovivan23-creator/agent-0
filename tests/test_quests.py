@@ -56,7 +56,10 @@ def test_submission_contains_checklist_route_and_next_steps() -> None:
     assert "Проверить перед отправкой" in markdown
     assert "Прочитать правила квеста." in markdown
     assert "quests/q42/submit" in markdown
-    assert "payout-verify" in markdown
+    # Команды после отправки должны быть настоящим синтаксисом CLI: раньше здесь
+    # печатались позиционные аргументы, которые argparse не принимает.
+    assert "выплата-подтвердить" in markdown
+    assert "--channel agent_marketplaces" in markdown
     assert "300–800" in markdown
     assert result["source"].startswith("шаблон")
 

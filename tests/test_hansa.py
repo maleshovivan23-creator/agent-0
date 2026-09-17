@@ -681,3 +681,57 @@ def test_dashboard_renders_the_platform_block(tmp_path: Path,
     )
     result = subprocess.run(["node", str(harness)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
+
+
+# --- дозор следит за самим циклом площадки -----------------------------------
+
+def test_watchdog_is_quiet_when_the_report_was_never_saved(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пока отчёта нет, это «ждёт настройки», а не поломка."""
+    from agent import watchdog
+
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    assert watchdog.check_hansa_report() is None
+
+
+def test_watchdog_flags_a_stale_report(tmp_path: Path,
+                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import watchdog
+
+    write_snapshot(tmp_path, recent_stamp(60.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    problem = watchdog.check_hansa_report()
+    assert problem is not None
+    assert problem.key == "hansa_stale"
+    assert "60.0" in problem.detail
+    assert "Actions" in problem.advice
+
+
+def test_watchdog_flags_an_empty_report(tmp_path: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import watchdog
+
+    write_snapshot(tmp_path, recent_stamp(1.0), [{"id": "q", "title": "без награды"}])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    problem = watchdog.check_hansa_report()
+    assert problem is not None and problem.key == "hansa_empty"
+
+
+def test_watchdog_is_silent_about_a_fresh_report(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import watchdog
+
+    write_snapshot(tmp_path, recent_stamp(2.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    assert watchdog.check_hansa_report() is None
+
+
+def test_watchdog_inspect_survives_a_broken_report(tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import watchdog
+
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "snapshots" / "hansa-report.json").write_text("{", encoding="utf-8")
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    problems = watchdog.inspect()
+    assert all(p.key != "hansa_stale" for p in problems), "битый файл не должен ронять дозор"

@@ -204,11 +204,44 @@ def check_missing_setup() -> List[Problem]:
     return problems
 
 
+def check_hansa_report() -> Optional[Problem]:
+    """Следит за отчётом площадки агентов.
+
+    Квесты площадки ферма берёт из отчёта, который снимает цикл в GitHub Actions.
+    Если цикл остановится (не тот секрет, отключённый workflow, сбой раннера),
+    ферма продолжит работать по старым данным и никто этого не заметит — ровно
+    та тихая поломка, ради которой существует дозор.
+    """
+    from agent import hansa
+
+    snapshot = hansa.read_snapshot()
+    if snapshot.problem:
+        # Пока отчёта нет вообще, это «ждёт настройки», а не поломка: ключ
+        # площадки может быть ещё не заведён. Тревога — только когда отчёт был,
+        # но перестал обновляться.
+        return None
+    if not snapshot.usable:
+        return Problem(
+            "hansa_empty", "Площадка агентов: отчёт без квестов",
+            f"последний отчёт от {snapshot.generated_at or 'неизвестного времени'} "
+            "не содержит ни одного квеста с наградой",
+            advice="проверить цикл площадки: .github/workflows/hansa.yml → Run workflow",
+        )
+    if snapshot.stale:
+        return Problem(
+            "hansa_stale", "Площадка агентов: отчёт устарел",
+            f"отчёту {snapshot.age_hours:.1f} ч (квесты разбирают за часы)",
+            advice="запустить цикл площадки вручную: Actions → AgentHansa, "
+                   "или проверить секрет AGENTHANSA_API_KEY",
+        )
+    return None
+
+
 def inspect(nag_hours: Optional[float] = None) -> List[Problem]:
     """Полный осмотр. Ни один сбой проверки не должен ломать осмотр."""
     load_environment()
     problems: List[Problem] = []
-    for checker in (check_heartbeat, check_quota, check_missing_setup):
+    for checker in (check_heartbeat, check_quota, check_missing_setup, check_hansa_report):
         try:
             result = checker()
         except Exception:

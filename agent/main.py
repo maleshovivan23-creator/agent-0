@@ -726,7 +726,15 @@ def cmd_quest(args: argparse.Namespace) -> int:
     payload = json.loads(opportunity["payload"] or "{}")
     opportunity["payload"] = payload
 
-    if payload.get("platform") is None:
+    # Признак квеста площадки берём из нескольких источников: поле platform
+    # появилось позже, а старые записи и отчёты его не содержат. Раньше из-за
+    # этого живой квест помечался как «не квест площадки».
+    is_quest = (
+        payload.get("platform") is not None
+        or args.opportunity_id.startswith("market:")
+        or opportunity.get("channel") == "agent_marketplaces"
+    )
+    if not is_quest:
         print(paint("Это не квест площадки — черновик всё равно собран, "
                     "но проверьте формат задания на площадке.", YELLOW))
 

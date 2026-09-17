@@ -127,8 +127,8 @@ def checks(opportunity: Dict[str, Any]) -> List[str]:
             + " — при полном лимите квест закрывают без рассмотрения."
         )
     items.append(
-        f"Объём: {WORD_MIN}–{WORD_MAX} слов; проверьте, что текст попадает в диапазон "
-        "(python -m agent.main quest <id> считает слова)."
+        f"Объём: {WORD_MIN}–{WORD_MAX} слов — столько проверяющий читает целиком; "
+        "сколько слов вышло, показывает `python -m agent.main черновик <id>`."
     )
     items.append("Факты и цифры в тексте должны быть проверяемы — выдуманные данные = отказ.")
     items.append("Отправка и привязка кошелька — только вашими руками, ключ в переписку не попадает.")
@@ -151,7 +151,12 @@ def submission_markdown(opportunity: Dict[str, Any], llm: Optional[LLMClient] = 
         "",
         f"- ID: `{opportunity.get('id')}`",
         f"- Награда: ${float(opportunity.get('reward_usd') or 0):,.0f}",
-        f"- Канал выплаты: {payload.get('payout_rail', 'н/д')} — {payload.get('payout_note', '')}",
+        "- Канал выплаты: "
+        + (
+            f"{payload['payout_rail']} — {payload['payout_note']}"
+            if payload.get("payout_rail") and payload.get("payout_note")
+            else str(payload.get("payout_rail") or "уточните на площадке")
+        ),
         f"- Дедлайн: {payload.get('deadline') or 'не указан'}",
         f"- Источник текста: {draft['source']}",
         f"- {volume_note}",
@@ -181,9 +186,12 @@ def submission_markdown(opportunity: Dict[str, Any], llm: Optional[LLMClient] = 
     parts += [
         "## После отправки",
         "",
-        "1. Записать время: `python -m agent.main hours-add agent_marketplaces <часы>`",
-        "2. Зафиксировать ожидаемую выплату: `python -m agent.main payout-add agent_marketplaces <сумма>`",
-        "3. После прихода USDC: `python -m agent.main payout-verify <id>` — только это доход.",
+        "1. Записать время: `python -m agent.main часы --channel agent_marketplaces "
+        "--hours <часы> --id " + str(opportunity.get("id") or "<id>") + "`",
+        "2. Зафиксировать ожидаемую выплату: `python -m agent.main выплата-запись "
+        "--channel agent_marketplaces --amount <сумма>`",
+        "3. После прихода USDC: `python -m agent.main выплата-подтвердить <id>` — "
+        "только это считается доходом.",
         "",
     ]
 
