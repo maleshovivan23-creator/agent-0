@@ -110,8 +110,8 @@ def test_a_broken_check_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_start_plan_is_actionable() -> None:
     plan = " ".join(doctor.start_plan())
-    for command in ("doctor", "payout-rails", "cycle", "payout-verify"):
-        assert command in plan
+    for command in ("проверка", "каналы-выплат", "цикл", "выплата-подтвердить"):
+        assert command in plan, f"в плане нет команды {command}"
 
 
 def test_readiness_serialises_for_the_dashboard(monkeypatch: pytest.MonkeyPatch) -> None:

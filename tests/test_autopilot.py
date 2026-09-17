@@ -138,5 +138,5 @@ def test_shift_report_names_the_next_human_action(monkeypatch: pytest.MonkeyPatc
     report = autopilot.shift_report(12)
     assert "Смена за последние 12 ч" in report
     assert "Квест про таблицы" in report
-    assert "inbox show" in report
+    assert "входящие show" in report
     assert autopilot.KILL_SWITCH_NAME in report

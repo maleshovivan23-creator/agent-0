@@ -41,6 +41,24 @@ TRIAGEABLE = {"github_bounties"}
 #: SQLite writes are serialised across worker threads; harvesting stays parallel.
 _DB_LOCK = threading.Lock()
 
+#: Русские названия воркеров — чтобы не запоминать внутренние имена.
+CHANNEL_ALIASES: Dict[str, str] = {
+    "гитхаб": "github_bounties",
+    "задачи": "github_bounties",
+    "контесты": "audit_contests",
+    "аудит": "audit_contests",
+    "площадки": "agent_marketplaces",
+    "квесты": "agent_marketplaces",
+    "разведка": "bug_recon",
+}
+
+
+def resolve_channel(name: Optional[str]) -> Optional[str]:
+    """Accept both the internal worker name and its Russian equivalent."""
+    if not name:
+        return name
+    return CHANNEL_ALIASES.get(name.strip().lower(), name)
+
 
 @dataclass
 class CycleResult:
@@ -288,6 +306,7 @@ def run_cycle(
     to the duration of the slowest one. Persistence is serialised.
     """
     names = channels or list(ACTIVE_CHANNELS.keys())
+    names = [resolve_channel(name) or name for name in names]
     result = CycleResult()
 
     valid = [name for name in names if name in ACTIVE_CHANNELS]

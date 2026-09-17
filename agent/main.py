@@ -24,7 +24,7 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent import autopilot as autopilot_mod
 from agent import doctor as doctor_mod
@@ -715,7 +715,7 @@ def cmd_quest(args: argparse.Namespace) -> int:
 def cmd_autopilot(args: argparse.Namespace) -> int:
     if args.status:
         data = autopilot_mod.status()
-        print(paint("Автопилот:", BOLD), data["state"])
+        print(paint("Автопилот:", BOLD), data.get("state_ru", data["state"]))
         print(f"  интервал: {data['interval']}с (диапазон {data['min_interval']}–{data['max_interval']}с)")
         print(f"  проходов: {data['ticks']} · подготовлено артефактов: {data['prepared_total']} · "
               f"в очереди к публикации: {data['inbox_ready']}")
@@ -747,7 +747,7 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     if args.once:
         report(autopilot_mod.tick(args.prepare))
         print()
-        print(paint("Артефакты ждут одного действия человека: python -m agent.main inbox", DIM))
+        print(paint("Готовые тексты ждут вашего действия: python -m agent.main входящие", DIM))
         return 0
 
     print(paint("Автопилот запущен. Ctrl+C — остановка, "
@@ -756,18 +756,30 @@ def cmd_autopilot(args: argparse.Namespace) -> int:
     return autopilot_mod.run(ticks=args.ticks, on_tick=report)
 
 
+def inbox_show_id(tokens: List[str]) -> Optional[int]:
+    """«входящие 3» и «входящие show 3» — оба варианта понятны человеку."""
+    cleaned = [token for token in tokens if token != "show"]
+    if not cleaned:
+        return None
+    try:
+        return int(cleaned[0])
+    except ValueError:
+        return None
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
-    if args.show:
-        item = inbox_mod.get(args.show)
+    show_id = inbox_show_id(list(args.args or []))
+    if show_id is not None:
+        item = inbox_mod.get(show_id)
         if not item:
-            print(f"Элемент #{args.show} не найден.")
+            print(f"Элемент #{show_id} не найден.")
             return 1
         print(paint(f"#{item['id']} [{item['kind_title']}] {item['title']}", BOLD))
         print(f"  награда/сводка: {item['summary']}")
         print(f"  действие человека: {item['action']}")
         print(f"  файл: {item['path']}")
         print()
-        print(inbox_mod.text(args.show))
+        print(inbox_mod.text(show_id))
         return 0
 
     items = inbox_mod.recent(args.limit) if args.all else inbox_mod.pending(args.limit)
@@ -784,8 +796,9 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         print(f"  #{item['id']} [{mark}] {item['kind_title']}: {item['title'][:64]}")
         print(f"      {item['summary']} · {item['action']}")
     print()
-    print(paint("Показать текст: python -m agent.main inbox show <id>", DIM))
-    print(paint("Отметить: python -m agent.main inbox-done <id> | inbox-skip <id>", DIM))
+    print(paint("Показать текст: python -m agent.main входящие show <id>", DIM))
+    print(paint("Отметить: python -m agent.main входящие-отправлено <id> "
+                "| входящие-пропустить <id>", DIM))
     return 0
 
 
@@ -829,10 +842,48 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Русские названия команд. Английские остаются рабочими — на них ссылаются
+#: документация, cron и службы, — но писать по-русски тоже можно.
+ALIASES: Dict[str, str] = {
+    "состояние": "status",
+    "дальше": "next",
+    "цикл": "cycle",
+    "очередь": "queue",
+    "конкуренция": "triage",
+    "план": "plan",
+    "заявка": "apply",
+    "статус": "status-set",
+    "часы": "hours-add",
+    "аналитика": "analytics",
+    "проверка-страны": "eligibility",
+    "отчёт": "report",
+    "отчет": "report",
+    "направления": "directions",
+    "каналы-выплат": "payout-rails",
+    "автоповтор": "loop",
+    "выплата-запись": "payout-add",
+    "выплата-подтвердить": "payout-verify",
+    "бухгалтерия": "ledger",
+    "правила": "policy",
+    "кто-я": "whoami",
+    "автопилот": "autopilot",
+    "входящие": "inbox",
+    "входящие-отправлено": "inbox-done",
+    "входящие-пропустить": "inbox-skip",
+    "смена": "shift",
+    "проверка": "doctor",
+    "черновик": "quest",
+    "дашборд": "serve",
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent.main",
         description="AGENT-0: автономная ферма воркеров для заработка без вложений",
+        epilog="Команды можно писать по-русски: проверка, автопилот, входящие, смена, "
+               "направления, каналы-выплат, черновик, заявка. "
+               "Справка по команде: python -m agent.main <команда> --help",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -841,7 +892,12 @@ def build_parser() -> argparse.ArgumentParser:
     next_cmd = sub.add_parser("next", help="что делать прямо сейчас")
     next_cmd.add_argument("--limit", type=int, default=5)
 
-    cycle = sub.add_parser("cycle", help="проход по воркерам")
+    cycle = sub.add_parser(
+        "cycle",
+        help="проход по воркерам",
+        epilog="Воркеры можно называть по-русски: гитхаб, контесты, площадки, разведка, "
+               "либо все сразу (без --channel).",
+    )
     cycle.add_argument("--channel", default=None)
     cycle.add_argument("--limit", type=int, default=25)
     cycle.add_argument("--no-triage", action="store_true", help="без проверки конкуренции")
@@ -911,8 +967,13 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--prepare", type=int, default=None, help="сколько артефактов готовить за проход")
     auto.add_argument("--status", action="store_true", help="состояние робота без запуска")
 
-    inbox_cmd = sub.add_parser("inbox", help="очередь готового к публикации")
-    inbox_cmd.add_argument("show", nargs="?", type=int, default=None, help="показать текст элемента")
+    inbox_cmd = sub.add_parser(
+        "inbox",
+        help="очередь готового к публикации",
+        epilog="Примеры: python -m agent.main входящие  — список; "
+               "python -m agent.main входящие show 3 — текст элемента №3.",
+    )
+    inbox_cmd.add_argument("args", nargs="*", help="show <номер> — показать текст элемента")
     inbox_cmd.add_argument("--all", action="store_true", help="включая отработанные")
     inbox_cmd.add_argument("--limit", type=int, default=20)
 
@@ -934,6 +995,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve", help="веб-дашборд")
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8000)
+
+    # Русские имена команд ведут к тем же обработчикам. Службы и cron
+    # продолжают работать с английскими — они не меняются.
+    try:
+        for alias, canonical in ALIASES.items():
+            sub._name_parser_map[alias] = sub._name_parser_map[canonical]
+    except (AttributeError, KeyError):  # pragma: no cover - защита от иной версии argparse
+        pass
 
     return parser
 
@@ -976,7 +1045,12 @@ def main(argv: List[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.command:
         return cmd_status(args)
-    return HANDLERS[args.command](args)
+    command = ALIASES.get(args.command, args.command)
+    handler = HANDLERS.get(command)
+    if handler is None:
+        parser.print_help()
+        return 2
+    return handler(args)
 
 
 if __name__ == "__main__":

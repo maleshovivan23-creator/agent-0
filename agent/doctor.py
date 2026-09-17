@@ -363,20 +363,24 @@ def start_plan() -> List[str]:
     """The ordered path from a fresh clone to the first confirmed payout."""
     country = (get_env("ELIGIBILITY_COUNTRY", "") or "RU").strip().upper()
     return [
-        "Шаг 0. Проверить себя: python -m agent.main doctor — должны остаться только предупреждения.",
+        "Шаг 0. Проверить себя: python -m agent.main проверка — "
+        "в выводе не должно остаться блокеров.",
         "Шаг 1. Прописать в .env: GITHUB_TOKEN (github.com/settings/tokens) и "
         "ELIGIBILITY_COUNTRY (код страны, куда получаете деньги).",
-        f"Шаг 2. Выбрать канал выплаты: python -m agent.main payout-rails --country {country} "
-        "— завести кошелёк/счёт из первой строки списка и привязать его на площадке.",
-        "Шаг 3. Собрать рынок: python -m agent.main cycle — затем python -m agent.main next.",
-        "Шаг 4. Взять самую свежую задачу с триажем ready → python -m agent.main triage <id> "
-        "→ python -m agent.main plan <id> → python -m agent.main apply <id> и опубликовать заявку руками.",
-        "Шаг 5. Сделать работу, записать время (hours-add) и статус (status-set … done).",
-        "Шаг 6. После мержа/приёмки: payout-add → payout-verify — только это считается доходом.",
-        "Параллельно: третье направление — зарегистрировать агента на площадке квестов, "
-        "положить ключ в .env, python -m agent.main quest <id> подготовит черновик заявки.",
-        "Раз в неделю: python -m agent.main cycle --channel audit_contests — контесты "
-        "дают EV/час в 5–10 раз выше bounty.",
+        f"Шаг 2. Выбрать канал получения денег: "
+        f"python -m agent.main каналы-выплат --country {country} "
+        "— завести кошелёк или счёт из первой строки и привязать его на площадке.",
+        "Шаг 3. Собрать рынок: python -m agent.main цикл — затем python -m agent.main дальше.",
+        "Шаг 4. Взять самую свежую задачу со статусом «свободна» → "
+        "python -m agent.main конкуренция <id> → python -m agent.main план <id> → "
+        "python -m agent.main заявка <id> и опубликовать текст руками.",
+        "Шаг 5. Сделать работу, записать время (часы) и статус (статус … done).",
+        "Шаг 6. После приёмки работы: выплата-запись → выплата-подтвердить — "
+        "только это считается доходом.",
+        "Параллельно третье направление: зарегистрировать агента на площадке квестов, "
+        "положить ключ в .env — python -m agent.main черновик <id> подготовит текст ответа.",
+        "Раз в неделю: python -m agent.main цикл --channel audit_contests — аудит-контесты "
+        "дают в 5–10 раз больше за час, чем задачи на GitHub.",
     ]
 
 

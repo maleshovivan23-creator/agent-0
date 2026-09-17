@@ -35,6 +35,14 @@ KILL_SWITCH_NAME = "STOP"
 DEFAULT_MIN_INTERVAL = 300.0
 DEFAULT_MAX_INTERVAL = 3600.0
 
+#: Состояния робота по-русски — их читает человек, а не скрипт.
+STATE_RU = {
+    "running": "работает",
+    "idle": "ещё не запускался",
+    "stale": "молчит слишком долго",
+    "stopped": "остановлен",
+}
+
 
 def kill_switch_path() -> Path:
     return project_root() / "data" / KILL_SWITCH_NAME
@@ -341,6 +349,7 @@ def status() -> Dict[str, Any]:
         state = "stale"
     return {
         "state": state,
+        "state_ru": STATE_RU.get(state, state),
         "stop_reason": reason,
         "enabled": enabled(),
         "last_tick": last,
@@ -351,6 +360,11 @@ def status() -> Dict[str, Any]:
         "ticks": int(get_state("autopilot.ticks", 0) or 0),
         "prepared_total": int(get_state("autopilot.prepared_total", 0) or 0),
         "inbox_ready": inbox.counts()["ready"],
+        "health_ru": {
+            "ok": "все проверки пройдены",
+            "degraded": "есть замечания",
+            "stopped": "робот остановлен",
+        },  # type: ignore[dict-item]
         "last_result": get_state("autopilot.last_result"),
     }
 
@@ -390,8 +404,8 @@ def shift_report(hours: float = 24.0) -> str:
     lines = [
         f"# Смена за последние {hours:g} ч (с {since:%Y-%m-%d %H:%M} UTC)",
         "",
-        f"- Проходов автопилота: {auto['ticks']} · интервал {auto['interval']}с · "
-        f"состояние: {auto['state']}",
+        f"- Проходов робота: {auto['ticks']} · пауза между проходами {auto['interval']}с · "
+        f"состояние: {auto.get('state_ru', auto['state'])}",
         f"- Подтверждённый доход: ${data['verified_usd']:,.2f} · "
         f"заявлено: ${data['claimed_usd']:,.2f}",
         f"- В очереди: {data['opportunities_queued']} · "
@@ -412,13 +426,13 @@ def shift_report(hours: float = 24.0) -> str:
     pending = inbox.pending(limit=5)
     lines += ["", "## Ждут одного действия", ""]
     if not pending:
-        lines.append("- очередь пуста: запустите `python -m agent.main autopilot --once`")
+        lines.append("- очередь пуста: запустите `python -m agent.main автопилот --once`")
     for item in pending:
         summary_text = item.get("summary") or ""
         lines.append(
             f"- **{item['kind_title']}** {summary_text} — {item['title'][:70]}\n"
             f"  действие: {item['action']}\n"
-            f"  текст: `python -m agent.main inbox show {item['id']}`"
+            f"  текст: `python -m agent.main входящие show {item['id']}`"
         )
 
     from agent.farm import low_value, next_actions
@@ -440,7 +454,7 @@ def shift_report(hours: float = 24.0) -> str:
         "",
         "## Остановить робота",
         "",
-        f"`touch data/{KILL_SWITCH_NAME}` — мгновенная остановка, "
-        "или `AUTOPILOT_ENABLED=false` в .env.",
+        f"``touch data/{KILL_SWITCH_NAME}`` — мгновенная остановка "
+        "(или `AUTOPILOT_ENABLED=false` в .env).",
     ]
     return "\n".join(lines)
