@@ -1,0 +1,32 @@
+# AGENT-0: автономный робот. Установка:
+#   sudo cp deploy/agent0-autopilot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now agent0-autopilot
+[Unit]
+Description=AGENT-0 autopilot (farm harvest, triage, drafts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/agent-0
+EnvironmentFile=-/opt/agent-0/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/agent-0/.venv/bin/python -m agent.main autopilot
+Restart=always
+RestartSec=20
+TimeoutStopSec=30
+# Ограничения на случай, если понадобится прижать робота
+CPUQuota=50%
+MemoryMax=1G
+# Изоляция: робот пишет только в свои данные и отчёты
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/agent-0/data /opt/agent-0/reports
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -21,3 +21,14 @@ venv/
 
 # Logs
 *.log
+
+# Generated recon drafts (may contain scope details)
+reports/
+
+# Personal authorization file for the bug_recon channel
+data/scope.yaml
+
+# Autopilot runtime: kill switch, cron/e2e locks and logs
+data/STOP
+data/*.lock
+logs/
