@@ -229,7 +229,7 @@ def check_wallet() -> Check:
     if address:
         info = wallet.classify(address)
         if info.ok:
-            note = f"указан ({_mask(address)}) — {info.title.lower()}"
+            note = f"указан ({_mask(address)}) — {info.title}"
             if card_works:
                 note += "; карта/Stripe тоже доступны"
             return Check("wallet", "Кошелёк для USDC", OK, note)

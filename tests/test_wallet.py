@@ -131,7 +131,11 @@ def test_wallet_command_accepts_a_valid_address(env_file: Path,
     assert main.main(["wallet", EIP55_SAMPLES[0]]) == 0
     output = capsys.readouterr().out
     assert "годен" in output
-    assert EIP55_SAMPLES[0] not in output, "адрес целиком в консоль не печатаем"
+    # Адрес получателя — публичные данные, поэтому в подсказке для копирования
+    # он печатается целиком; маска нужна только в коротких строках статуса
+    # (там она помогает глазами сверить начало и конец адреса).
+    assert wallet.mask(EIP55_SAMPLES[0]) in output
+    assert f"кошелёк {EIP55_SAMPLES[0]} --save" in output
 
 
 def test_wallet_command_refuses_a_broken_address(env_file: Path,
