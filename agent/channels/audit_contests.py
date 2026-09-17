@@ -73,6 +73,8 @@ SCOPE_FILES = ("scope.txt", "scope.md", "out_of_scope.txt", "README.md")
 #: the operator can audit the assumption instead of trusting the number.
 MEDIAN_FINDING_AWARD = 2_000.0  # Immunefi/Code4rena public reporting
 PROBABILITY_AT_LEAST_ONE = 0.30  # prepared operator working the playbook
+#: Насколько режем ожидание, если репозиторий давно молчит, а срок неизвестен.
+SUSPECT_PENALTY = 0.15
 COST_PER_HOUR = 15.0  # opportunity cost of the operator's time
 
 _SKIP_SUFFIXES = ("-judging", "-mitigation", "_judging")
@@ -99,10 +101,16 @@ class AuditContestsChannel(Channel):
     )
 
     def __init__(self, max_age_days: Optional[int] = None, scope_budget: int = 4,
-                 page_budget: int = 4) -> None:
+                 page_budget: int = 4, suspect_days: Optional[int] = None) -> None:
         super().__init__()
         self.max_age_days = max_age_days if max_age_days is not None else int(
             get_env("CONTEST_MAX_AGE_DAYS", "75") or 75
+        )
+        #: Контест длится 1-2 недели, и до конца в репозиторий вносят правки
+        #: (Q&A, scope, README). Если README молчит о сроках, а правок нет
+        #: давно — приём работ, скорее всего, закрыт.
+        self.suspect_days = suspect_days if suspect_days is not None else int(
+            get_env("CONTEST_QUIET_DAYS", "14") or 14
         )
         self.scope_budget = scope_budget
         self.page_budget = page_budget
@@ -297,8 +305,15 @@ class AuditContestsChannel(Channel):
                 estimate = self._estimate(scope)
                 pushed_age = _age_days(repo.get("pushed_at"))
                 open_hint = "recent" if pushed_age <= 30 else "stale"
+                # Контест двухмесячной давности стоял в очереди первым с $22/час,
+                # хотя работы принимают 1-2 недели. Молчание репозитория — не
+                # доказательство, но и не повод звать человека на 24 часа работы:
+                # показываем подозрение и режем ожидание.
+                suspect = hours_left is None and pushed_age > self.suspect_days
 
                 probability = PROBABILITY_AT_LEAST_ONE
+                if suspect:
+                    probability *= SUSPECT_PENALTY
                 pool = page.get("prize_pool_usd")
                 if hours_left is not None and hours_left < estimate["hours"]:
                     # Времени меньше, чем нужно на саму работу: шанс падает резко,
@@ -313,6 +328,8 @@ class AuditContestsChannel(Channel):
                     "probability": round(probability, 3),
                     "expected_value_usd": round(expected, 2),
                     "ev_per_hour": round(ev_per_hour, 2),
+                    "suspect_expired": suspect,
+                    "repo_pushed_days": pushed_age,
                 }
 
                 rationale = (
@@ -328,6 +345,12 @@ class AuditContestsChannel(Channel):
                     rationale += f"; до конца приёма работ {hours_left:.0f}ч"
                     if hours_left < estimate["hours"]:
                         rationale += " — времени меньше, чем нужно на саму работу"
+                if suspect:
+                    rationale += (
+                        f"; приём работ, возможно, закрыт: правок в репозитории нет "
+                        f"{pushed_age:.0f} дн — подтвердите срок на площадке, "
+                        f"прежде чем садиться за код"
+                    )
                 if scope.get("scope_solidity"):
                     rationale += f"; в scope {scope['scope_solidity']} Solidity-файлов"
                 elif scope.get("scope_rust"):
@@ -352,6 +375,7 @@ class AuditContestsChannel(Channel):
                             "age_days": age,
                             "pushed_age_days": pushed_age,
                             "open_hint": open_hint,
+                            "suspect_expired": suspect,
                             "language": repo.get("language"),
                             "effort_hours": estimate["hours"],
                             "probability": estimate["probability"],
@@ -368,7 +392,12 @@ class AuditContestsChannel(Channel):
                                 f"Открыт ли контест и какой дедлайн: {meta['page']}",
                                 "Размер призового пула и правила начисления долей",
                                 "Есть ли у вас нужный стек (Solidity/Rust/Cairo)",
-                            ],
+                            ] + ([
+                                "СРОЧНО: приём работ может быть уже закрыт — "
+                                f"правок в репозитории нет {pushed_age:.0f} дн, "
+                                "а контесты длятся 1-2 недели. Сначала откройте "
+                                f"страницу контеста: {meta['page']}",
+                            ] if suspect else []),
                             **scope,
                             **page,
                         },

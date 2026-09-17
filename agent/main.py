@@ -42,7 +42,7 @@ from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
 from agent import eligibility, hansa, payouts, quests, wallet
 from agent.config import get_env, load_environment, project_root
-from agent.farm import next_actions, overview, run_cycle
+from agent.farm import floor_report, next_actions, overview, run_cycle
 from agent.ledger import (
     analytics,
     connect,
@@ -122,7 +122,33 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_next(args: argparse.Namespace) -> int:
     actions = next_actions(limit=args.limit)
     if not actions:
-        print("Очередь пуста. Запустите: python -m agent.main cycle")
+        report = floor_report()
+        if not report["queued"]:
+            print("Очередь пуста. Запустите: python -m agent.main цикл")
+            return 0
+        # Раньше здесь печаталось «очередь пуста», хотя в базе лежали десятки
+        # задач: ни одна не проходила порог MIN_EV_PER_HOUR. Это отправляло
+        # человека включать цикл заново вместо того, чтобы понять расклад.
+        print(paint(f"Ни одна из {report['queued']} задач в очереди не проходит порог "
+                    f"{money(report['floor'])}/час — работать пока не над чем.", YELLOW))
+        print()
+        print(f"{DIM}Порог — это защита от работы себе в убыток: он сравнивает "
+              f"награду с оценкой времени. Настроить: MIN_EV_PER_HOUR в .env."
+              f"{RESET}")
+        if report["unmeasured"]:
+            print(f"{DIM}{report['unmeasured']} задач без оценки ценности — по ним "
+                  f"триаж не проходил, их EV неизвестен, а не нулевой.{RESET}")
+        print()
+        print("Ближе всего к порогу:")
+        for item in report["near"]:
+            reward = money(item["reward_usd"]) if item["reward_usd"] else "награда н/д"
+            measured = money(item["ev_per_hour"]) if item["measured"] else "не измерено"
+            print(f"  {paint(item['title'][:64], BOLD)} — {reward}, EV/час ~{measured}")
+            print(f"  {DIM}{item['id']} · {item['channel']}{RESET}")
+        print()
+        print("Что делать: свежие задачи разбирают в первые часы — автопилот проверяет "
+              "каналы каждые несколько минут и положит их в очередь. Полный список: "
+              "python -m agent.main очередь")
         return 0
     print(paint("Что делать сейчас — по убыванию ожидаемой ценности часа:", BOLD))
     print()
@@ -210,7 +236,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
 def cmd_queue(args: argparse.Namespace) -> int:
     rows = top_opportunities(limit=args.limit, channel=args.channel)
     if not rows:
-        print("Очередь пуста. Запустите: python -m agent.main cycle")
+        print("Очередь пуста. Запустите: python -m agent.main цикл")
         return 0
     print(f"{'score':>7}  {'награда':>10}  {'EV/час':>8}  {'канал':<16}  задача")
     for row in rows:
@@ -842,15 +868,33 @@ def cmd_contests(args: argparse.Namespace) -> int:
             "code_repos": payload.get("code_repos") or [],
             "expired": bool(payload.get("expired")) or row["status"] == "done",
             "ends_at": payload.get("ends_at"),
+            "suspect": bool(payload.get("suspect_expired")),
+            "pushed_days": payload.get("repo_pushed_days") or payload.get("pushed_age_days"),
         }
         (expired if item["expired"] else active).append(item)
 
+    suspect = [item for item in active if item["suspect"]]
+    active = [item for item in active if not item["suspect"]]
+
     print(paint("Аудит-контесты:", BOLD),
-          f"активных {len(active)} · завершённых {len(expired)}")
+          f"активных {len(active)} · под вопросом {len(suspect)} · завершённых {len(expired)}")
     print()
     if not active:
         print("  Активных контестов нет. Новые появляются раз в неделю —")
         print("  автопилот проверит сам: python -m agent.main автопилот --status")
+    if suspect:
+        print(paint("Под вопросом (срок неизвестен, репозиторий молчит):", YELLOW))
+        print()
+        for item in suspect:
+            days = f"{item['pushed_days']:.0f} дн без правок" if item["pushed_days"] else "правок нет давно"
+            print(f"  {paint(item['title'][:56], BOLD)} — {days}")
+            print(f"  {DIM}сначала проверьте, идёт ли приём работ: {item['url']}{RESET}")
+            print(f"  {DIM}EV/час снижен: контесты длятся 1-2 недели, "
+                  f"приём мог закрыться{RESET}")
+            print()
+        print(paint("  → в план берём только после подтверждения срока на площадке.", DIM))
+        print()
+
     for item in sorted(active, key=lambda it: (it["hours_left"] is None, it["hours_left"] or 0)):
         pool = f"${item['pool']:,.0f}" if item["pool"] else "пул не указан"
         hours = f"{item['hours_left']:.0f}ч до конца" if item["hours_left"] is not None else "срок на площадке"

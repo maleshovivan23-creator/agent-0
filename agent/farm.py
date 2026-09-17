@@ -398,6 +398,64 @@ def _steps_for(channel: str, opportunity_id: str, payload: Dict[str, Any]) -> Li
     ]
 
 
+def floor_report(limit: int = 3, min_ev_per_hour: Optional[float] = None) -> Dict[str, Any]:
+    """Почему ``next_actions`` ничего не предложил.
+
+    «Очередь пуста» — неправда, когда в базе 34 задачи, а порог ценности
+    (``MIN_EV_PER_HOUR``) не проходит ни одна. Тогда человеку нужно не «запустите
+    цикл», а честный расклад: сколько задач, сколько из них измерено, сколько
+    отсеяно порогом и что именно стоит к нему ближе всего.
+    """
+    from agent.ledger import connect
+
+    floor = min_ev_per_hour if min_ev_per_hour is not None else get_float("MIN_EV_PER_HOUR", 3.0)
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, channel, url, reward_usd, score, payload, status "
+            "FROM opportunities WHERE status='queued'",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    above: List[Dict[str, Any]] = []
+    near: List[Dict[str, Any]] = []
+    unmeasured = 0
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        ev_hour = float(payload.get("ev_per_hour") or 0.0)
+        item = {
+            "id": row["id"],
+            "title": row["title"],
+            "channel": row["channel"],
+            "url": row["url"],
+            "reward_usd": row["reward_usd"],
+            "ev_per_hour": ev_hour,
+            "measured": bool(payload.get("ev_per_hour")),
+        }
+        if ev_hour >= floor:
+            above.append(item)
+        else:
+            if not item["measured"]:
+                unmeasured += 1
+            near.append(item)
+
+    near.sort(key=lambda item: item["ev_per_hour"], reverse=True)
+    return {
+        "floor": floor,
+        "queued": len(rows),
+        "above": len(above),
+        "below": len(near),
+        "unmeasured": unmeasured,
+        "near": near[:limit],
+    }
+
+
 def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[Dict[str, Any]]:
     """What the operator should actually do next, in order.
 

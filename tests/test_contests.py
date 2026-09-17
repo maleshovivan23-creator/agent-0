@@ -117,3 +117,69 @@ def test_every_opportunity_states_its_assumptions() -> None:
     assert payload["assumptions"], "estimates must be auditable"
     assert payload["verify_before_work"], "operator must know what to verify"
     assert "медианная выплата" in payload["assumptions"][0]
+
+
+# --- тишина в репозитории: срок неизвестен, а правок нет давно ----------------
+
+def quiet_contest(pushed_days: float) -> Dict[str, Any]:
+    return {"code-423n4": [repo("2026-07-quiet-protocol", age_days=61,
+                                 pushed_days=pushed_days)]}
+
+
+def test_silent_repository_loses_its_place_in_the_queue() -> None:
+    """Контест двухмесячной давности стоял первым с $22/час, хотя приём закрыт."""
+    fresh = FakeContests(quiet_contest(1)).harvest()[0]
+    stale = FakeContests(quiet_contest(22)).harvest()[0]
+
+    assert stale.payload["suspect_expired"] is True
+    assert fresh.payload["suspect_expired"] is False
+    assert stale.score < fresh.score / 3, (
+        f"подозрение на закрытый приём должно резко снижать EV/час: "
+        f"{fresh.score} → {stale.score}"
+    )
+    assert "возможно, закрыт" in stale.rationale
+    assert "22 дн" in stale.rationale
+
+
+def test_silent_repository_warns_the_human_first() -> None:
+    stale = FakeContests(quiet_contest(30)).harvest()[0]
+    checks = stale.payload["verify_before_work"]
+    assert any("СРОЧНО" in line and "30 дн" in line for line in checks), checks
+
+
+class FakeWithReadme(FakeContests):
+    """Тот же фейк, но README контеста отдаёт заданный текст (даты приёма работ)."""
+
+    def __init__(self, repos, readme: str) -> None:
+        super().__init__(repos)
+        self._readme = readme
+
+    def _get(self, url: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        if url.endswith("/contents/README.md"):
+            return {"content": base64.b64encode(self._readme.encode()).decode()}
+        return super()._get(url, params)
+
+
+def test_known_deadline_is_not_treated_as_suspicion() -> None:
+    """Если срок известен и работы ещё принимают — штрафа нет."""
+    from datetime import datetime, timedelta, timezone
+
+    # Платформы пишут сроки словами: «Ends March 13, 2026 20:00 UTC»
+    future = (datetime.now(timezone.utc) + timedelta(days=5)).strftime("%B %d, %Y")
+    channel = FakeWithReadme(
+        quiet_contest(40),
+        f"# Contest\n\n- Starts July 01, 2026 20:00 UTC\n- Ends {future} 20:00 UTC\n"
+        f"- Total prize pool: $50,000\n",
+    )
+    opportunities = channel.harvest()
+    assert opportunities, "контест с известным сроком должен остаться в очереди"
+    assert opportunities[0].payload.get("hours_left") is not None, "даты из README не прочитались"
+    assert opportunities[0].payload.get("suspect_expired") is False
+
+
+def test_quiet_threshold_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEST_QUIET_DAYS", "60")
+    channel = FakeContests(quiet_contest(22))
+    assert channel.harvest()[0].payload["suspect_expired"] is False, (
+        "порог из .env должен уважаться"
+    )
