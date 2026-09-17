@@ -153,7 +153,7 @@ def check_github_api(session_factory: Optional[Callable[[], Any]] = None) -> Che
             "github_api", "Связь с GitHub", BLOCK,
             f"нет доступа к api.github.com ({exc.__class__.__name__})",
             impact="первое направление (bounty) не сможет искать задачи",
-            fix="проверьте интернет, прокси или TLS: python -m agent.main whoami",
+            fix="проверьте интернет, прокси или TLS: python -m agent.main кто-я",
             required=True,
         )
     if response.status_code == 403:
@@ -206,7 +206,7 @@ def check_payout_rail() -> Check:
             f"{country}: карта/Stripe не работают, рабочие каналы — "
             f"{', '.join(assessment.recommended[:3])}",
             impact="нужен кошелёк или сервис-посредник, иначе заработанное не дойдёт",
-            fix=f"python -m agent.main payout-rails --country {country}",
+            fix=f"python -m agent.main каналы-выплат --country {country}",
         )
     return Check(
         "payout_rail", "Канал получения денег", OK,
@@ -251,7 +251,7 @@ def check_marketplace_key() -> Check:
         "AGENTHANSA_API_KEY пуст — канал простаивает",
         impact="незакрытым остаётся канал выплат без банка: квесты $10–500 в USDC",
         fix="зарегистрировать агента на agenthansa.com (e-mail, без кошелька) → "
-            "AGENTHANSA_API_KEY=... в .env → python -m agent.main cycle",
+            "AGENTHANSA_API_KEY=... в .env → python -m agent.main цикл",
     )
 
 
@@ -353,7 +353,7 @@ def run_checks(session_factory: Optional[Callable[[], Any]] = None) -> List[Chec
                     "Проверка не удалась",
                     BLOCK,
                     f"{exc.__class__.__name__}: {exc}",
-                    fix="сообщите о проблеме: python -m agent.main whoami",
+                    fix="сообщите о проблеме: python -m agent.main кто-я",
                 )
             )
     return results

@@ -368,6 +368,11 @@ def tick(prepare_limit: Optional[int] = None) -> TickResult:
     set_state("autopilot.last_result", result.as_dict())
     set_state("autopilot.inbox_ready", inbox.counts()["ready"])
 
+    try:
+        learning.prune()
+    except Exception:
+        pass
+
     followup_lines: List[str] = []
     try:
         followup_lines = followup.summary_lines(limit=10)

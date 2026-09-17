@@ -252,16 +252,25 @@ def run_channel(
         items, triaged, dropped = _triage_items(items, budgets.get(name, 0))
 
     elapsed = round(time.time() - started, 1)
+    # Завершённые контесты тоже сохраняются (чтобы не искать их заново), но
+    # «новыми задачами» они не считаются: брать их в работу нельзя.
+    available = [item for item in items if (item.status or "queued") == "queued"]
+    channel_error = getattr(channel, "last_error", "") or ""
     with _DB_LOCK:
-        new = upsert_opportunities(items, fresh_only=True)
+        new = upsert_opportunities(available, fresh_only=True)
         kept = upsert_opportunities(items)
+        # Ошибку канала пишем в журнал проходов: иначе дозор не узнаёт, что
+        # площадка неделю отдаёт 403 и канал фактически не работает.
         record_run(
             name,
             channel.capability,
             found=len(items),
             kept=kept,
-            policy="allowed",
-            note=f"{elapsed}s, новых {new}, триаж {triaged}, отсеяно {dropped}",
+            policy="error" if channel_error else "allowed",
+            note=(
+                f"{elapsed}s, новых {new}, триаж {triaged}, отсеяно {dropped}"
+                + (f", ошибка: {channel_error[:160]}" if channel_error else "")
+            ),
         )
 
     top = [
@@ -293,7 +302,8 @@ def run_channel(
         "dropped": dropped,
         "triaged": triaged,
         "elapsed_seconds": elapsed,
-        "error": getattr(channel, "last_error", ""),
+        "new": new,
+        "error": channel_error,
         "notes": list(getattr(channel, "notes", []) or []),
         "top": top,
     }
@@ -405,10 +415,13 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
         if ev_hour < floor:
             continue
         steps = [
-            f"python -m agent.main plan {row['id']}",
+            f"python -m agent.main досье {row['id']}",
+            f"python -m agent.main план {row['id']}",
             "сделать работу по плану",
-            f"python -m agent.main hours-add --channel {row['channel']} --hours N --id {row['id']}",
-            f"python -m agent.main payout-add --channel {row['channel']} --amount X --evidence 'PR #N merged'",
+            f"python -m agent.main статус {row['id']} working",
+            f"python -m agent.main часы --channel {row['channel']} --hours N --id {row['id']}",
+            f"python -m agent.main выплата-запись --channel {row['channel']} "
+            f"--amount X --evidence 'PR #N merged'",
         ]
         first_seen = None
         try:

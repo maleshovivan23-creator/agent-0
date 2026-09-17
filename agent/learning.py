@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.ledger import connect, get_state, set_state
@@ -38,18 +39,37 @@ CREATE TABLE IF NOT EXISTS learning_events (
     subject TEXT NOT NULL,
     channel TEXT,
     value REAL DEFAULT 0,
+    samples INTEGER DEFAULT 0,
     detail TEXT,
+    day TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_learning_kind ON learning_events(kind, subject);
 """
 
+#: Сколько дней держать наблюдения: дальше рынок меняется и статистика врёт.
+OBSERVATION_DAYS = 120
+
 
 def _ensure_schema() -> None:
     conn = connect()
     try:
         conn.executescript(SCHEMA)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(learning_events)")}
+        if "day" not in existing:
+            conn.execute("ALTER TABLE learning_events ADD COLUMN day TEXT")
+            conn.execute(
+                "UPDATE learning_events SET day = substr(created_at, 1, 10) WHERE day IS NULL"
+            )
+        if "samples" not in existing:
+            conn.execute("ALTER TABLE learning_events ADD COLUMN samples INTEGER DEFAULT 0")
+            conn.execute("UPDATE learning_events SET samples = 1 WHERE samples IS NULL OR samples = 0")
+        # индекс по дню создаётся после добавления столбца: на старой базе
+        # CREATE INDEX с несуществующим столбцом падает
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_day ON learning_events(kind, subject, day)"
+        )
         conn.commit()
     finally:
         conn.close()
@@ -57,15 +77,35 @@ def _ensure_schema() -> None:
 
 def record(kind: str, subject: str, channel: str = "", value: float = 0.0,
            detail: str = "") -> None:
-    """Записать событие обучения. Виды: observation, decision, outcome."""
+    """Записать событие обучения. Виды: observation, decision, outcome.
+
+    Наблюдения за поисковыми запросами суммируются по суткам: робот делает
+    проход каждые пять минут, и сырых строк набежало бы полмиллиона за пару
+    месяцев — таблица росла бы быстрее, чем польза от неё. Решения человека и
+    выплаты пишутся по одной записи на событие: их терять нельзя.
+    """
     _ensure_schema()
     conn = connect()
     try:
-        conn.execute(
-            "INSERT INTO learning_events(kind, subject, channel, value, detail) "
-            "VALUES(?, ?, ?, ?, ?)",
-            (kind, subject, channel, float(value), detail),
-        )
+        if kind == "observation":
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            cursor = conn.execute(
+                "UPDATE learning_events SET value = value + ?, samples = samples + 1, "
+                "detail = ? WHERE kind = ? AND subject = ? AND day = ?",
+                (float(value), detail, kind, subject, day),
+            )
+            if cursor.rowcount == 0:
+                conn.execute(
+                    "INSERT INTO learning_events(kind, subject, channel, value, samples, "
+                    "detail, day) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (kind, subject, channel, float(value), 1, detail, day),
+                )
+        else:
+            conn.execute(
+                "INSERT INTO learning_events(kind, subject, channel, value, samples, detail) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                (kind, subject, channel, float(value), 1, detail),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -153,12 +193,28 @@ class SubjectStats:
         }
 
 
+def prune(days: int = OBSERVATION_DAYS) -> int:
+    """Удалить устаревшие наблюдения. Решения и выплаты не трогаем никогда."""
+    _ensure_schema()
+    conn = connect()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM learning_events WHERE kind = 'observation' "
+            "AND created_at < datetime('now', ?)",
+            (f"-{int(days)} days",),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
+
+
 def _stats_for(kind_filter: str = "") -> Dict[str, SubjectStats]:
     _ensure_schema()
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT kind, subject, value, detail FROM learning_events "
+            "SELECT kind, subject, value, samples, detail FROM learning_events "
             + ("WHERE kind=?" if kind_filter else ""),
             (kind_filter,) if kind_filter else (),
         ).fetchall()
@@ -170,7 +226,9 @@ def _stats_for(kind_filter: str = "") -> Dict[str, SubjectStats]:
         subject = row["subject"]
         item = stats.setdefault(subject, SubjectStats(subject=subject))
         if row["kind"] == "observation":
-            item.observations += 1
+            # Строка суммирует сутки, поэтому число проходов хранится отдельно
+            # в samples: вес считается по проходам, а таблица не растёт.
+            item.observations += int(row["samples"] or 1)
             item.new_items += float(row["value"] or 0)
         elif row["kind"] == "decision":
             item.decisions += 1
@@ -292,8 +350,6 @@ def learned_state() -> Dict[str, Any]:
 
 
 def mark_updated() -> None:
-    from datetime import datetime, timezone
-
     set_state("learning.updated_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
 

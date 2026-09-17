@@ -101,6 +101,20 @@ def start_cycle(channel: Optional[str] = None) -> bool:
 
 
 _READINESS: Dict[str, Any] = {"at": 0.0, "data": None}
+_FOLLOWUP: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def _followup(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
+    """Слежение ходит в GitHub — кэшируем, чтобы не жечь лимит на каждый запрос."""
+    now = time.time()
+    if refresh or _FOLLOWUP["data"] is None or now - _FOLLOWUP["at"] > ttl:
+        try:
+            _FOLLOWUP["data"] = followup_mod.state()
+        except Exception as exc:  # дашборд не должен падать из-за проверки
+            _FOLLOWUP["data"] = {"watched": 0, "verdicts": {},
+                                 "error": f"{exc.__class__.__name__}: {exc}"}
+        _FOLLOWUP["at"] = now
+    return _FOLLOWUP["data"]
 
 
 def _readiness(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
@@ -169,7 +183,7 @@ def collect_state() -> Dict[str, Any]:
         "autopilot": autopilot_mod.status(),
         "watchdog": watchdog_mod.state(),
         "learning": learning_mod.learned_state(),
-        "followup": followup_mod.state(),
+        "followup": _followup(),
         "inbox": inbox_mod.pending(limit=10),
         "inbox_counts": inbox_mod.counts(),
         "queue": queue,
@@ -393,7 +407,7 @@ PAGE = r"""<!doctype html>
     Никаких капч, сибил-кошельков, airdrop-фарма и эксплуатации чужих систем —
     причины расписаны в блоке «Заблокировано».<br>
     «Оценка конвейера» — это ожидаемая выручка из вероятности успеха и сумм наград, а не гарантия.
-    Подтверждение выплаты — действие человека: <code>python -m agent.main payout-verify &lt;id&gt;</code>.
+    Подтверждение выплаты — действие человека: <code>python -m agent.main выплата-подтвердить &lt;id&gt;</code>.
   </div>
 </div>
 
@@ -591,6 +605,16 @@ $("p-add").onclick = () => {
 async function refresh() {
   let s;
   try { s = await (await fetch("/api/state")).json(); } catch (e) { return; }
+  // Неполный ответ (ошибка сервера, оборванная связь) не должен ломать страницу:
+  // показываем, что обновление не прошло, и ждём следующего круга.
+  const NEED = ["ledger", "stats", "runner", "farm", "queue", "next", "low_value", "contests"];
+  const missing = !s ? NEED.slice() : NEED.filter((k) => s[k] == null);
+  if (missing.length) {
+    const note = $("s-note");
+    if (note) note.textContent = "Не удалось получить состояние фермы (нет полей: "
+      + missing.join(", ") + ") — обновление пропущено.";
+    return;
+  }
   const L = s.ledger, A = s.stats, R = s.runner;
 
   $("s-verified").textContent = money(A.verified_usd);
@@ -642,7 +666,7 @@ async function refresh() {
         ожидаемо ${money(n.expected_value_usd)}
       </div>
       <div class="m">${esc(n.why)}</div>
-      <div class="m">первый шаг: <code>python -m agent.main plan ${esc(n.id)}</code></div>
+      <div class="m">первый шаг: <code>python -m agent.main досье ${esc(n.id)}</code></div>
     </div>`).join("")
     : '<span class="muted">Пока нечего рекомендовать: запустите цикл или подождите свежих задач.</span>';
 

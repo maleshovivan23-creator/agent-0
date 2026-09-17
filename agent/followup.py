@@ -201,8 +201,14 @@ def check(triage_client: Optional[TriageClient] = None, limit: int = 20) -> List
         watch.changes = changes
         watch.changed = bool(changes)
         if watch.changed and watch.verdict == "ok":
+            # Ситуация сдвинулась, но не критично: соперники появились, PR пока нет.
+            # Раньше такое изменение никуда не выводилось и человек о нём не узнавал.
+            watch.verdict = "watching"
             watch.reason = "; ".join(changes)
-            watch.action = "Следить дальше: пока преимущество у вас."
+            watch.action = (
+                "Следить внимательнее: конкуренция растёт, но открытых PR пока нет. "
+                "Закончить работу быстрее, чем соперники."
+            )
         results.append(watch)
         updated[str(row["id"])] = {
             "attempts": watch.attempts_now,
@@ -217,9 +223,16 @@ def check(triage_client: Optional[TriageClient] = None, limit: int = 20) -> List
     return results
 
 
-def alerting(limit: int = 20) -> List[Watch]:
+#: Вердикты, о которых стоит сообщать: остальные либо норма, либо нет данных.
+ALERTING = ("rival", "stale", "closed", "lost", "watching")
+
+
+def alerting(limit: int = 20, client: Optional[TriageClient] = None) -> List[Watch]:
     """Только то, что требует действия прямо сейчас."""
-    return [watch for watch in check(limit=limit) if watch.verdict not in ("ok", "unknown")]
+    return [
+        watch for watch in check(triage_client=client, limit=limit)
+        if watch.verdict in ALERTING
+    ]
 
 
 def summary_lines(limit: int = 20, client: Optional[TriageClient] = None) -> List[str]:

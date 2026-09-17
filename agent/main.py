@@ -1,20 +1,28 @@
 """AGENT-0 command line.
 
-    python -m agent.main status                 # состояние фермы
-    python -m agent.main next                   # что делать прямо сейчас
-    python -m agent.main cycle                  # проход по воркерам (сбор + триаж)
-    python -m agent.main queue                  # очередь возможностей по EV/час
-    python -m agent.main triage <id>            # перепроверить конкретную задачу
-    python -m agent.main plan <id>              # план работ (подагенты)
-    python -m agent.main apply <id>             # текст заявки в задачу (для человека)
-    python -m agent.main hours-add ...          # учёт затраченного времени
-    python -m agent.main analytics              # ставка $/час и оценка конвейера
-    python -m agent.main report                 # отчёт в reports/
-    python -m agent.main eligibility --country DE
-    python -m agent.main payout-add ... / payout-verify <id>
-    python -m agent.main ledger | policy
-    python -m agent.main loop --interval 900    # автономный режим
-    python -m agent.main serve                  # дашборд на 0.0.0.0:8000
+    python -m agent.main проверка               # что нужно, чтобы начать зарабатывать
+    python -m agent.main автопилот              # робот: сбор, триаж, черновики, слежение
+    python -m agent.main состояние              # состояние фермы
+    python -m agent.main дальше                 # что делать прямо сейчас
+    python -m agent.main цикл                   # разовый проход по воркерам
+    python -m agent.main очередь                # очередь возможностей по EV/час
+    python -m agent.main конкуренция <id>       # перепроверить конкретную задачу
+    python -m agent.main досье <id>             # где править и что запускать
+    python -m agent.main план <id>              # план работ (подагенты)
+    python -m agent.main заявка <id>            # текст заявки в задачу (для человека)
+    python -m agent.main часы ...               # учёт затраченного времени
+    python -m agent.main аналитика              # ставка $/час и оценка конвейера
+    python -m agent.main контесты               # активные контесты: пул и дедлайн
+    python -m agent.main слежение               # не отдали ли задачу, пока вы работаете
+    python -m agent.main дозор                  # что сломалось, пока вас не было
+    python -m agent.main отчёт                  # отчёт в reports/
+    python -m agent.main проверка-страны --country DE
+    python -m agent.main выплата-запись ... / выплата-подтвердить <id>
+    python -m agent.main бухгалтерия | правила
+    python -m agent.main автоповтор --interval 900   # автономный режим (старый)
+    python -m agent.main дашборд                # веб-дашборд на 0.0.0.0:8000
+
+Английские имена команд продолжают работать: на них ссылаются службы и cron.
 """
 
 from __future__ import annotations

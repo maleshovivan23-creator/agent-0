@@ -108,12 +108,13 @@ def check_channels(quiet_runs: Optional[int] = None) -> List[Problem]:
 
     problems: List[Problem] = []
     for channel, runs in by_channel.items():
-        if expected_quiet(channel):
-            continue
         recent = runs[:threshold]
         if len(recent) < threshold:
             continue
-        if all(int(run["found"] or 0) == 0 for run in recent):
+        # Ожидаемое молчание (нет ключа, нет файла авторизации) отменяет только
+        # жалобу на отсутствие находок. Ошибки — не «тишина»: канал мог неделю
+        # отдавать 403, и об этом человек обязан узнать.
+        if not expected_quiet(channel) and all(int(run["found"] or 0) == 0 for run in recent):
             note = (recent[0].get("note") or "").strip()
             problems.append(
                 Problem(
@@ -124,15 +125,18 @@ def check_channels(quiet_runs: Optional[int] = None) -> List[Problem]:
                     "или ключ площадки (python -m agent.main проверка)",
                 )
             )
-        errors = [run for run in recent if "network" in (run.get("note") or "").lower()
-                  or "ошибка" in (run.get("note") or "").lower()]
+        errors = [
+            run for run in recent
+            if "ошибка:" in (run.get("note") or "").lower()
+            or "network" in (run.get("note") or "").lower()
+        ]
         if len(errors) >= max(2, threshold // 2):
             problems.append(
                 Problem(
                     "channel_errors",
                     f"Канал {channel} часто падает",
                     f"{len(errors)} из {len(recent)} проходов с ошибкой: "
-                    f"{(errors[0].get('note') or '')[:120]}",
+                    f"{(errors[0].get('note') or '').split('ошибка:', 1)[-1][:140].strip()}",
                     "проверьте сеть и доступ к площадке; канал временно можно "
                     "отключить: python -m agent.main цикл --channel <канал>",
                 )

@@ -128,16 +128,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """Догоняем схему для баз, созданных прошлыми версиями.
 
     Столбцы добавляются, а не пересоздаются: в базе лежит история часов и выплат,
-    терять её из-за новой версии нельзя.
+    терять её из-за новой версии нельзя. Обновление строк выполняется только при
+    реальном изменении схемы — иначе каждый вызов connect() переписывал бы всю
+    таблицу задач целиком.
     """
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(opportunities)")}
+    added = False
     for column in ("first_seen", "last_seen"):
         if column not in existing:
             conn.execute(f"ALTER TABLE opportunities ADD COLUMN {column} TEXT")
-    conn.execute(
-        "UPDATE opportunities SET first_seen = COALESCE(first_seen, fetched_at), "
-        "last_seen = COALESCE(last_seen, fetched_at)"
-    )
+            added = True
+    if added:
+        conn.execute(
+            "UPDATE opportunities SET first_seen = COALESCE(first_seen, fetched_at), "
+            "last_seen = COALESCE(last_seen, fetched_at)"
+        )
     # индекс создаётся здесь, а не в SCHEMA: на старой базе столбца ещё нет
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_opportunities_first_seen ON opportunities(first_seen)"
@@ -189,14 +194,20 @@ def upsert_opportunities(items: List[Opportunity], fresh_only: bool = False) -> 
     conn = connect()
     new_ids: List[str] = []
     try:
-        known = {
-            row["id"]
-            for row in conn.execute(
-                "SELECT id FROM opportunities WHERE id IN (%s)"
-                % ",".join("?" * len(items)),
-                [item.id for item in items],
+        # Порциями по 400: у SQLite ограничено число переменных в одном запросе,
+        # и на большой выдаче одиночный IN(...) просто упал бы.
+        known: set = set()
+        ids = [item.id for item in items]
+        for start in range(0, len(ids), 400):
+            chunk = ids[start:start + 400]
+            known.update(
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM opportunities WHERE id IN (%s)"
+                    % ",".join("?" * len(chunk)),
+                    chunk,
+                )
             )
-        }
         now = _utcnow()
         for item in items:
             row = item.to_row()

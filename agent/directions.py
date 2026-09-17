@@ -70,7 +70,7 @@ DIRECTIONS: List[Direction] = [
         entry_cost="низкий: нужен только GitHub",
         ceiling="$50–$2,500 за задачу",
         payout_rail="stripe_card (Algora, Opire) — проверьте свою страну",
-        next_step="python -m agent.main next (брать только свежие задачи с триажем ready)",
+        next_step="python -m agent.main дальше (только задачи со свободной конкуренцией)",
     ),
     Direction(
         key="ceiling",
@@ -80,7 +80,7 @@ DIRECTIONS: List[Direction] = [
         entry_cost="высокий: нужен Solidity/Rust и практика",
         ceiling="медиана находки ~$2,000; топовые результаты — десятки тысяч",
         payout_rail="USDC / ончейн / Stripe (зависит от платформы)",
-        next_step="python -m agent.main plan <contest-id> и читать scope",
+        next_step="python -m agent.main досье <id> — он же покажет scope и файлы",
     ),
     Direction(
         key="no_bank",
