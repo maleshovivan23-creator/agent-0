@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 from agent.config import get_env
 
@@ -88,9 +87,9 @@ def ensure_db() -> str:
 def save_event(table: str, **values: object) -> None:
     db_path = ensure_db()
     conn = sqlite3.connect(db_path)
-    columns = ", ".join(values.keys())
+    cols = ", ".join(values.keys())
     placeholders = ", ".join(["?" for _ in values])
-    conn.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(values.values()))
+    conn.execute(f"INSERT INTO {table} ({cols}) VALUES ({placeholders})", tuple(values.values()))
     conn.commit()
     conn.close()
 

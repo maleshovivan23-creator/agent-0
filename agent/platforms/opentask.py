@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from typing import Any, Dict, List
 
 from agent.models import Contract, Task
@@ -27,7 +26,7 @@ class OpenTaskPlatform(BasePlatform):
                     id="ot_002",
                     platform=self.platform_name,
                     title="Data analysis snapshot",
-                    description="Convert a CSV-like dataset into a concise business summary with top insights.",
+                    description="Convert data into a concise business summary with key insights.",
                     category="data_analysis",
                     budget=88.0,
                     competition=0.5,

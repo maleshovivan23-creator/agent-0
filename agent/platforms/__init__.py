@@ -1,1 +1,1 @@
-# AGENT-0 package
+# Platform package

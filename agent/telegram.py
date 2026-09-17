@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from typing import Any, Dict
-
 import requests
 
 from agent.config import get_env

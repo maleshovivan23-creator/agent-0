@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from agent.config import get_env, get_float
 from agent.models import Contract, Task
 
 

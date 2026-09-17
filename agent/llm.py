@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-from typing import Any, Dict, List
-
 import requests
 
 from agent.config import get_env
@@ -39,6 +36,6 @@ class LLMClient:
     @staticmethod
     def _fallback_response(prompt: str) -> str:
         return (
-            "Dry-run result: task executed with safe generated placeholder output. "
-            "This message is used when Ollama is not running or the model is unavailable."
+            "Dry-run result: task executed with a safe placeholder response. "
+            "This message is used when Ollama is not running or the local model is unavailable."
         )
