@@ -318,3 +318,39 @@ def test_trim_keeps_both_ends_but_not_the_middle() -> None:
 
 def test_a_short_description_is_not_touched() -> None:
     assert task_detail.trim_for_human("коротко", 400) == "коротко"
+
+
+# --- сроки из условий ----------------------------------------------------------
+
+def test_deadlines_are_found_in_both_languages() -> None:
+    text = ("Work/code deadline: 7 October 2026, 23:00 UTC. "
+            "Official approval deadline: 14 October 2026. "
+            "Evidence deadline 16 октября 2026.")
+    assert task_detail.find_deadlines(text) == ["2026-10-07", "2026-10-14", "2026-10-16"]
+
+
+def test_an_english_and_a_russian_date_are_one_date() -> None:
+    assert task_detail.find_deadlines("7 October 2026 и 7 октября 2026") == ["2026-10-07"]
+
+
+def test_deadline_search_ignores_nonsense() -> None:
+    assert task_detail.find_deadlines("") == []
+    assert task_detail.find_deadlines("никаких дат тут нет") == []
+    assert task_detail.find_deadlines("99 October 2026") == [], "такого дня не бывает"
+
+
+def test_deadline_limit_keeps_the_order() -> None:
+    text = "1 January 2026, 2 February 2026, 3 March 2026, 4 April 2026"
+    assert task_detail.find_deadlines(text, limit=2) == ["2026-01-01", "2026-02-02"]
+
+
+def test_draft_names_the_deadlines_found_in_the_terms() -> None:
+    from agent.channels.taskmarket import draft_markdown
+
+    text = draft_markdown({
+        "id": "taskmarket:0xrich", "title": "Задача", "reward_usd": 10.0,
+        "payload": {"description": "Submit by 7 October 2026 and confirm before 14 October 2026."},
+    })
+    assert "Сроки, найденные в условиях" in text
+    assert "2026-10-07" in text and "2026-10-14" in text
+    assert "проверьте на площадке" in text

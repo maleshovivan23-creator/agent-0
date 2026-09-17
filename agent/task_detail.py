@@ -166,6 +166,51 @@ def summarize_page(html: str) -> str:
     return f"{len(html)} байт, заголовок: {name[:80]!r}"
 
 
+#: Сроки в условиях пишут словами: «7 October 2026», «14 октября 2026». Их ищет
+#: человек глазами по всему тексту, а это как раз то, что робот делает лучше.
+_MONTHS = (
+    "January|February|March|April|May|June|July|August|September|October|November|December"
+    "|января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря"
+)
+DATE_RE = re.compile(
+    rf"(?P<day>\d{{1,2}})\s+(?P<month>{_MONTHS})[a-zа-я]*\.?,?\s+(?P<year>20\d{{2}})",
+    re.IGNORECASE,
+)
+MONTH_NUMBERS = {
+    "january": "01", "february": "02", "march": "03", "april": "04", "may": "05",
+    "june": "06", "july": "07", "august": "08", "september": "09", "october": "10",
+    "november": "11", "december": "12",
+    "января": "01", "февраля": "02", "марта": "03", "апреля": "04", "мая": "05",
+    "июня": "06", "июля": "07", "августа": "08", "сентября": "09", "октября": "10",
+    "ноября": "11", "декабря": "12",
+}
+
+
+def find_deadlines(text: str, limit: int = 3) -> List[str]:
+    """Даты из условий задачи — в порядке появления, без повторов.
+
+    «7 October 2026» и «7 октября 2026» — одна и та же дата: приводим к виду
+    `2026-10-07`, чтобы человек сравнивал сроки, а не написание месяцев.
+    """
+    if not text:
+        return []
+    found: List[str] = []
+    for match in DATE_RE.finditer(text):
+        month = match.group("month").lower()
+        number = MONTH_NUMBERS.get(month)
+        if not number:
+            continue
+        day = int(match.group("day"))
+        if not 1 <= day <= 31:
+            continue
+        stamp = f"{match.group('year')}-{number}-{day:02d}"
+        if stamp not in found:
+            found.append(stamp)
+        if len(found) >= limit:
+            break
+    return found
+
+
 def task_url(task_id: str, base: str = "https://taskmarket.dev") -> str:
     return f"{base}/tasks/{task_id}"
 

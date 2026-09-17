@@ -220,6 +220,15 @@ def draft_markdown(opportunity: Dict[str, Any]) -> str:
 
             "",
         ]
+    from agent.task_detail import find_deadlines
+
+    deadlines = find_deadlines(description)
+    if deadlines:
+        lines += [
+            f"- **Сроки, найденные в условиях:** {', '.join(deadlines)} — "
+            "робот прочитал их в тексте задачи, проверьте на площадке",
+            "",
+        ]
     lines += [
         "## Прочитать перед работой (этого робот знать не может)",
         "",
