@@ -166,10 +166,11 @@ python -m agent.main doctor
 Дальше — рабочий цикл:
 
 ```bash
-python -m agent.main cycle        # собрать рынок по трём направлениям сразу
-python -m agent.main next         # что делать прямо сейчас (только выше $3/час)
-python -m agent.main triage <id>  # проверить конкуренцию до начала работы
-python -m agent.main plan <id>    # план работ от подагентов
+python -m agent.main цикл         # собрать рынок по трём направлениям сразу
+python -m agent.main дальше       # что делать прямо сейчас (только выше $3/час)
+python -m agent.main конкуренция <id>  # проверить, не занята ли задача
+python -m agent.main досье <id>   # где править и что запускать (файлы, команды)
+python -m agent.main план <id>    # план работ от подагентов
 python -m agent.main apply <id>   # текст заявки; публикация — вашими руками
 python -m agent.main quest <id>   # черновик ответа на квест площадки (300–800 слов)
 python -m agent.main hours-add agent_marketplaces 1.5

@@ -135,7 +135,8 @@ def cmd_next(args: argparse.Namespace) -> int:
         print(f"   {DIM}{item['why'][:150]}{RESET}")
         if item["url"]:
             print(f"   {item['url']}")
-        print(f"   {DIM}первый шаг: python -m agent.main plan {item['id']}{RESET}")
+        print(f"   {DIM}первый шаг: python -m agent.main досье {item['id']} "
+              f"→ затем план {item['id']}{RESET}")
         print()
     return 0
 
