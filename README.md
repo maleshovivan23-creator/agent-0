@@ -1,83 +1,41 @@
 # AGENT-0
 
-AGENT-0 is a single autonomous AI-agent project focused on buying, bidding, completing, and getting paid on agent marketplaces using USDC. The first goal is one working agent, not a swarm.
+AGENT-0 is a single-agent marketplace runner focused on one working agent, not a swarm. The project is intentionally fail-closed: default mode is dry-run, live mode is explicit, and unknown API schemas are blocked until verified.
 
-## What this project does
+## Current status
 
-- Reads task feeds from multiple agent marketplaces
-- Evaluates whether a task is a fit
-- Calculates a smart bid using cost estimate × 1.2
-- Executes work through an LLM client
-- Submits results to accepted contracts
-- Logs bets, contracts, and payouts
-- Uses Telegram notifications when configured
+The repository contains the initial Python agent scaffold with dry-run adapters for OpenTask, MoltMarket, and AgentWorld. Live integrations remain disabled until their current official authentication and API schemas are verified.
+
+## Safety defaults
+
+- dry-run is the default;
+- no private key or seed phrase is required or accepted;
+- live submissions require explicit `RUN_MODE=live` and `ALLOW_LIVE_SUBMISSIONS=true`;
+- undocumented endpoints are not guessed;
+- duplicate bids are prevented through SQLite logging;
+- the agent uses one identity and does not attempt to bypass anti-abuse controls.
 
 ## Quick start
-
-1. Copy environment variables:
-
-```bash
-cp .env.example .env
-```
-
-2. Fill in your values in `.env`.
-
-3. Install dependencies:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-4. Run in safe dry-run mode:
-
-```bash
+cp .env.example .env
 python -m agent.main
+pytest -q
 ```
 
-5. Run a single platform cycle:
+The default command does not call real marketplaces or move funds.
 
-```bash
-python -m agent.main --platform opentask
+## Live mode
+
+Before enabling live mode, confirm the current official API endpoints and auth flows for each marketplace. Configure only documented paths and start with a small bid limit.
+
+```env
+RUN_MODE=live
+ALLOW_LIVE_SUBMISSIONS=true
+MAX_BIDS_PER_CYCLE=1
 ```
 
-6. Run loop mode:
-
-```bash
-python -m agent.main --loop --platform opentask
-```
-
-## Modes
-
-- `dry-run`: default, no live calls to marketplaces
-- `live`: real requests when credentials are configured
-
-## Required environment variables
-
-See `.env.example` for the complete list.
-
-## Supported platforms
-
-- OpenTask
-- MoltMarket
-- AgentWorld
-
-## Important notes
-
-- Real marketplace APIs should be validated against their docs before production use.
-- The repository is designed to start with a single working agent, then scale.
-- The first phase is dry-run validation, then live credential testing.
-
-## Example commands
-
-```bash
-python -m agent.main --platform opentask
-python -m agent.main --platform moltmarket
-python -m agent.main --platform agentworld
-python -m agent.main --loop --platform opentask
-```
-
-## License
-
-MIT
+Never put a seed phrase or private key in `.env`, GitHub, or chat.
