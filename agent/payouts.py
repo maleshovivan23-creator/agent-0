@@ -83,7 +83,7 @@ RAILS: Dict[str, Rail] = {
             "(USDC на Base, минимум 10 USDC), часть программ Immunefi и Hats Finance."
         ),
         requires=[
-            "Кошелёк с адресом на Base (например MetaMask, Rabby, Trust)",
+            "Кошелёк с EVM-адресом на Base (Phantom, MetaMask, Rabby, Trust)",
             "Обычно e-mail и минимальная активность; KYC чаще нет",
         ],
         costs="Сетевой сбор за перевод (центы на Base)",

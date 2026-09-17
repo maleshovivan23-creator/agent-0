@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple  # noqa: F401
 
+from agent import wallet
 from agent.config import project_root
 
 EVM_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -44,10 +45,11 @@ def _check_country(value: str) -> Optional[str]:
 
 
 def _check_wallet(value: str) -> Optional[str]:
-    if EVM_RE.match(value) or TRON_RE.match(value):
+    """Общая проверка с agent.wallet: EVM, Solana (Phantom) и TRON."""
+    url = wallet.classify(value)
+    if url.ok:
         return None
-    return ("не похоже на адрес: для USDC на Base нужен адрес вида 0x… (40 символов), "
-            "для USDT в сети TRON — вида T… (34 символа)")
+    return url.problem + (f" — {url.advice}" if url.advice else "")
 
 
 @dataclass
@@ -84,6 +86,8 @@ FIELDS: List[Field] = [
         "Кошелёк для USDC (Base)",
         "адрес вида 0x… — можно пропустить, если получаете деньги на карту или счёт. "
         "Нужен для третьего направления (квесты площадок) и крипто-выплат. "
+        "В Phantom это адрес EVM (после включения сети Base), а не адрес Solana: "
+        "проверить и сохранить — python -m agent.main кошелёк 0x… --save. "
         "Seed-фразу не вводите никогда и нигде.",
         check=_check_wallet,
     ),

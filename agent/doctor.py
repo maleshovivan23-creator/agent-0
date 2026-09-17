@@ -13,7 +13,6 @@ check either inspects the environment or makes a real request.
 
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 
 from agent import payouts
+from agent import wallet
 from agent.config import get_env, project_root
 from agent.http import build_session
 from agent.ledger import connect
@@ -32,7 +32,6 @@ OK = "ok"
 WARN = "warn"
 BLOCK = "block"
 
-ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$|^T[1-9A-HJ-NP-Za-km-z]{33}$")
 
 
 @dataclass
@@ -221,23 +220,34 @@ def check_wallet() -> Check:
                      fix="задайте ELIGIBILITY_COUNTRY в .env")
     assessment = payouts.recommend(country)
     card_rail = "stripe_card"
-    if card_rail not in assessment.blocked:
+    card_works = card_rail not in assessment.blocked
+
+    # Адрес проверяется всегда, когда он вообще есть: крипто-перевод не отменить,
+    # и битый адрес опасен даже тогда, когда карта в стране работает. Раньше при
+    # рабочей карте сохранённый адрес не проверялся — ошибка прошла бы молча.
+    address = (get_env("PAYOUT_WALLET", "") or "").strip()
+    if address:
+        info = wallet.classify(address)
+        if info.ok:
+            note = f"указан ({_mask(address)}) — {info.title.lower()}"
+            if card_works:
+                note += "; карта/Stripe тоже доступны"
+            return Check("wallet", "Кошелёк для USDC", OK, note)
+        return Check(
+            "wallet", "Кошелёк для USDC", WARN, f"адрес не принят: {info.problem}",
+            impact="выплата может уйти в никуда — крипто-перевод не отменить",
+            fix="проверьте и пересохраните адрес: python -m agent.main кошелёк 0x… --save",
+        )
+
+    if card_works:
         return Check("wallet", "Кошелёк для USDC", OK,
                      "не обязателен: карта/Stripe в вашей стране работают")
-    address = (get_env("PAYOUT_WALLET", "") or "").strip()
-    if address and ADDRESS_RE.match(address):
-        return Check("wallet", "Кошелёк для USDC", OK, f"указан ({_mask(address)})")
-    if address:
-        return Check(
-            "wallet", "Кошелёк для USDC", WARN, "адрес не похож на EVM (0x…) или TRON (T…)",
-            impact="выплата может уйти в никуда — проверьте адрес в кабинете кошелька",
-            fix="скопируйте адрес получения USDC (сеть Base) и вставьте в PAYOUT_WALLET",
-        )
     return Check(
         "wallet", "Кошелёк для USDC", WARN, "адрес не указан",
         impact="крипто-выплаты (AgentHansa, часть программ) требуют привязанного кошелька",
-        fix="создайте кошелёк (MetaMask/Rabby/Trust), сеть Base, сохраните seed-фразу офлайн "
-            "→ PAYOUT_WALLET=0x… в .env и привяжите адрес на площадке",
+        fix="создайте кошелёк (Phantom/MetaMask/Rabby), включите сеть Base, сохраните "
+            "seed-фразу офлайн → python -m agent.main кошелёк 0x… --save "
+            "(нужен адрес EVM, не Solana) и привяжите его на площадке",
     )
 
 
@@ -369,7 +379,9 @@ def start_plan() -> List[str]:
         "ELIGIBILITY_COUNTRY (код страны, куда получаете деньги).",
         f"Шаг 2. Выбрать канал получения денег: "
         f"python -m agent.main каналы-выплат --country {country} "
-        "— завести кошелёк или счёт из первой строки и привязать его на площадке.",
+        "— завести кошелёк или счёт из первой строки. Адрес кошелька проверить и "
+        "сохранить: python -m agent.main кошелёк 0x… --save, затем привязать его "
+        "в кабинете площадки.",
         "Шаг 3. Собрать рынок: python -m agent.main цикл — затем python -m agent.main дальше.",
         "Шаг 4. Взять самую свежую задачу со статусом «свободна» → "
         "python -m agent.main конкуренция <id> → python -m agent.main план <id> → "

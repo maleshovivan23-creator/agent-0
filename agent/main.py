@@ -40,7 +40,7 @@ from agent import dossier as dossier_mod, followup as followup_mod
 from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
-from agent import eligibility, payouts, quests
+from agent import eligibility, payouts, quests, wallet
 from agent.config import get_env, load_environment, project_root
 from agent.farm import next_actions, overview, run_cycle
 from agent.ledger import (
@@ -1083,6 +1083,66 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wallet(args: argparse.Namespace) -> int:
+    """Проверить адрес кошелька и, если он верный, сохранить в .env.
+
+    Деньги в крипте не возвращаются: ошибка в одном символе отправляет выплату
+    чужому человеку, а площадка при этом отчитается, что заплатила. Поэтому
+    адрес проверяется по правилам сети (контрольная сумма EVM, base58check
+    TRON, длина Solana) до того, как его увидят на площадке.
+    """
+    saved = (get_env("PAYOUT_WALLET", "") or "").strip()
+    address = (args.address or saved).strip()
+
+    if not address:
+        print(paint("Кошелёк не указан.", BOLD))
+        print("Проверить адрес:   python -m agent.main кошелёк 0x…")
+        print("Сохранить в .env:  python -m agent.main кошелёк 0x… --save")
+        print(f"{DIM}Откуда взять адрес (Phantom): Settings → Active Networks → включить Base, "
+              f"затем скопировать адрес кнопкой «Copy». Это адрес EVM (0x…), не Solana.{RESET}")
+        return 0
+
+    info = wallet.classify(address)
+    if args.json:
+        print(json.dumps({"address": wallet.mask(address), **info.as_dict()},
+                         ensure_ascii=False, indent=2))
+        return 0 if info.ok else 2
+
+    print(paint(f"Проверка адреса {wallet.mask(address)}", BOLD))
+    print(f"  Тип: {info.title}")
+    if info.networks:
+        print(f"  Сети: {', '.join(info.networks)}")
+    mark = paint("годен", GREEN) if info.ok else paint("не годен", RED)
+    print(f"  Вердикт: {mark}")
+    if info.problem:
+        print(f"  Что не так: {info.problem}")
+    if info.advice:
+        print(f"  {DIM}{info.advice}{RESET}")
+
+    if not info.ok:
+        return 2
+
+    if args.save:
+        setupenv.update_env({"PAYOUT_WALLET": info.normalized})
+        os.environ["PAYOUT_WALLET"] = info.normalized
+        print(f"  Сохранено в .env: PAYOUT_WALLET={wallet.mask(info.normalized)}")
+        print(f"{DIM}Адрес ещё нужно привязать в кабинете площадки — "
+              f"иначе выплата не уйдёт.{RESET}")
+    else:
+        stored = wallet.classify(saved) if saved else None
+        if stored and stored.ok and stored.normalized.lower() == info.normalized.lower():
+            print(f"{DIM}Этот адрес уже записан в .env.{RESET}")
+        else:
+            print(f"{DIM}Сохранить в .env: python -m agent.main кошелёк "
+                  f"{info.normalized} --save{RESET}")
+
+    if info.kind == "solana":
+        print(f"{DIM}Важно: у адресов Solana нет контрольной суммы — опечатку проверить "
+              f"невозможно. Для площадок, платящих на Base (USDC), нужен EVM-адрес из "
+              f"Phantom: это другой адрес того же кошелька.{RESET}")
+    return 0
+
+
 def cmd_whoami(args: argparse.Namespace) -> int:
     data = overview()
     print(f"Модель для планов: {data.get('llm', 'см. agent.llm')}")
@@ -1119,6 +1179,8 @@ ALIASES: Dict[str, str] = {
     "бухгалтерия": "ledger",
     "правила": "policy",
     "кто-я": "whoami",
+    "кошелёк": "wallet",
+    "кошелек": "wallet",
     "настройка": "setup",
     "контесты": "contests",
     "досье": "dossier",
@@ -1220,6 +1282,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    wallet_cmd = sub.add_parser("wallet", help="проверить адрес кошелька для выплат")
+    wallet_cmd.add_argument("address", nargs="?", default="")
+    wallet_cmd.add_argument("--save", action="store_true", help="записать адрес в .env")
+    wallet_cmd.add_argument("--json", action="store_true")
+
     contests = sub.add_parser("contests", help="контесты: пул, дедлайн, объём работ")
     contests.add_argument("--all", action="store_true")
 
@@ -1320,6 +1387,7 @@ HANDLERS = {
     "ledger": cmd_ledger,
     "policy": cmd_policy,
     "whoami": cmd_whoami,
+    "wallet": cmd_wallet,
     "setup": cmd_setup,
     "contests": cmd_contests,
     "dossier": cmd_dossier,

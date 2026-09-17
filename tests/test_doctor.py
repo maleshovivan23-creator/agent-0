@@ -83,7 +83,8 @@ def test_wallet_is_required_when_cards_are_blocked(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("PAYOUT_WALLET", raising=False)
     check = doctor.check_wallet()
     assert check.status == doctor.WARN
-    assert "PAYOUT_WALLET" in check.fix
+    # подсказка должна вести к команде, которая проверит адрес, а не просто к .env
+    assert "кошелёк" in check.fix and "--save" in check.fix
 
     monkeypatch.setenv("PAYOUT_WALLET", "0x" + "a" * 40)
     assert doctor.check_wallet().status == doctor.OK

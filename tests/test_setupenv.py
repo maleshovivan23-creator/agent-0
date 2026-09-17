@@ -81,8 +81,13 @@ def test_country_validation(country: str, expected_error: bool) -> None:
     "wallet,ok",
     [
         ("0x" + "a" * 40, True),
-        ("T" + "1" * 33, True),
+        # Настоящий адрес USDT TRC-20: раньше здесь стоял выдуманный "T" + "1" * 33,
+        # который проходил только по длине, а проверку base58check не проходит —
+        # на такой адрес деньги ушли бы в никуда.
+        ("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", True),
+        ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", True),  # Phantom, сеть Solana
         ("0x" + "a" * 39, False),
+        ("T" + "1" * 33, False),
         ("мой кошелёк", False),
         ("", False),
     ],
