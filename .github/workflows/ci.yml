@@ -85,6 +85,12 @@ jobs:
               got = sum(1 for row in tasks if row.get("description"))
               print(f"::notice::Taskmarket: задач {len(tasks)}, с описанием {got} "
                     f"(просили {data.get('detail_requested', 0)})")
+              for row in tasks:
+                  if row.get("description"):
+                      # Хвост описания в логе: видно, что разбор нашёл условия
+                      # задачи, а не служебный текст самого сайта.
+                      snippet = " ".join(str(row["description"]).split())[:90]
+                      print(f"::notice::первые слова описания ({row.get('id', '')[:12]}): {snippet}")
               if data.get("detail_requested") and not got:
                   print("::warning::разбор страницы задачи перестал находить описание")
           PY
