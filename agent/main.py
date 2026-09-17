@@ -42,6 +42,7 @@ from agent import dossier as dossier_mod, followup as followup_mod
 from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
+from agent.channels import build_channel
 from agent import eligibility, hansa, payouts, quests, wallet
 from agent.config import get_env, load_environment, project_root
 from agent.farm import floor_report, next_actions, overview, run_cycle
@@ -1199,6 +1200,81 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Снять отчёт площадки в snapshots/<канал>-report.json.
+
+    Отчёт нужен там, где ферма и площадка живут в разных сетях: цикл идёт на
+    раннере GitHub (сеть открыта), ферма читает файл из репозитория и показывает
+    задачи в очереди. У AgentHansa такой отчёт снимает workflow, у Taskmarket —
+    эта команда.
+    """
+    try:
+        channel = build_channel(args.channel)
+    except KeyError:
+        # Незнакомая буква в имени канала не должна показывать трассировку:
+        # человеку нужен список того, что существует.
+        from agent.channels import ACTIVE_CHANNELS
+
+        print(paint(f"Канала «{args.channel}» нет.", YELLOW))
+        print("Есть такие: " + ", ".join(sorted(ACTIVE_CHANNELS)))
+        print(f"{DIM}Отчёт снимается по каналу, а не по названию площадки: "
+              f"для второй площадки это taskmarket.{RESET}")
+        return 2
+    opportunities = channel.harvest(limit=args.limit)
+    rows: List[Dict[str, Any]] = []
+    for opportunity in opportunities:
+        row = dict(opportunity.payload or {})
+        row.setdefault("id", opportunity.id)
+        row["title"] = opportunity.title
+        row["reward_usd"] = opportunity.reward_usd
+        row["url"] = opportunity.url
+        row["channel_status"] = opportunity.status
+        row["rationale"] = opportunity.rationale
+        rows.append(row)
+
+    payload = {
+        "channel": channel.name,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "count": len(rows),
+        "error": channel.last_error,
+        "tasks": rows,
+    }
+    # Данные, пришедшие из прежнего отчёта, — не новый снимок: если переписать
+    # файл, у него станет сегодняшнее время, и ферма будет считать старые задачи
+    # свежими. Такой проход оставляет отчёт как есть.
+    from_snapshot = any(str(row.get("source")) == "snapshot" for row in rows)
+
+    target = project_root() / "snapshots" / f"{channel.name}-report.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if (not rows or from_snapshot) and target.exists():
+        # Плохой проход не должен затирать хороший отчёт: иначе один сбой сети на
+        # раннере оставит ферму без данных, хотя вчерашние задачи ещё живы.
+        why = ("живой страницы нет, данные нашлись только в прежнем отчёте"
+               if from_snapshot else "задач не найдено")
+        print(paint(f"{target.name}: {why} — оставляю прежний отчёт на месте", YELLOW))
+        if channel.last_error:
+            print(f"  причина: {channel.last_error}")
+        return 1
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                      encoding="utf-8")
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+        return 0
+
+    title = getattr(channel, "title", channel.name)
+    if rows:
+        print(f"{title}: задач с наградой {len(rows)} → {target.relative_to(project_root())}")
+        for row in rows[:5]:
+            print(f"  ${float(row.get('reward_usd') or 0):.2f} — {str(row.get('title'))[:60]}")
+    else:
+        print(paint(f"{title}: задач не найдено", YELLOW))
+        if channel.last_error:
+            print(f"  причина: {channel.last_error}")
+    print(f"{DIM}Отчёт лежит в репозитории: ферма прочитает его там, где домен площадки закрыт.{RESET}")
+    return 0 if rows else 1
+
+
 def cmd_hansa(args: argparse.Namespace) -> int:
     """Площадка AgentHansa: статус, лента заданий, кошелёк и отправка работы.
 
@@ -1550,6 +1626,8 @@ ALIASES: Dict[str, str] = {
     "автопилот": "autopilot",
     "многозадачность": "multitask",
     "потоки": "multitask",
+    "снапшот": "snapshot",
+    "отчёт-площадки": "snapshot",
     "входящие": "inbox",
     "входящие-отправлено": "inbox-done",
     "входящие-пропустить": "inbox-skip",
@@ -1694,6 +1772,14 @@ def build_parser() -> argparse.ArgumentParser:
     setup_cmd.add_argument("--show", action="store_true",
                            help="показать текущие значения маской")
 
+    snap = sub.add_parser(
+        "snapshot",
+        help="снять отчёт площадки в snapshots/ для фермы без доступа к её домену",
+    )
+    snap.add_argument("channel", help="канал: taskmarket, agent_marketplaces, github_bounties")
+    snap.add_argument("--limit", type=int, default=50, help="сколько задач включать в отчёт")
+    snap.add_argument("--json", action="store_true", help="вывести отчёт в stdout")
+
     multi = sub.add_parser(
         "multitask",
         help="многозадачный режим: несколько заказов сразу",
@@ -1781,6 +1867,7 @@ HANDLERS = {
     "learning": cmd_learning,
     "autopilot": cmd_autopilot,
     "multitask": cmd_multitask,
+    "snapshot": cmd_snapshot,
     "inbox": cmd_inbox,
     "inbox-done": lambda args: cmd_inbox_resolve(args, "published"),
     "inbox-skip": lambda args: cmd_inbox_resolve(args, "skipped"),

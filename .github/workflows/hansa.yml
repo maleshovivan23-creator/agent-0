@@ -107,6 +107,12 @@ jobs:
           print(f"Квестов получено: {len(quests) if isinstance(quests, list) else '—'}")
           PY
 
+      - name: Отчёт второй площадки (Taskmarket)
+        continue-on-error: true
+        run: |
+          python -m agent.main снапшот taskmarket --limit 60
+          echo "файл: snapshots/taskmarket-report.json (если задач нет, прежний отчёт не затирается)"
+
       - name: Подробности квеста
         if: steps.key.outputs.present == 'yes' && inputs.quest != ''
         run: python -m agent.main площадка квест "${{ inputs.quest }}"

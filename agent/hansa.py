@@ -25,12 +25,11 @@ agent-руководства (``skill.md``/``llms.txt``), поэтому зде�
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.config import get_env, project_root
+from agent.config import get_env
+from agent.config import project_root
 from agent.http import build_session
 
 #: Базовый адрес. Можно переопределить (AGENTHANSA_API) — например, для тестов.
@@ -412,42 +411,24 @@ class Snapshot:
 def read_snapshot(path: Optional[str] = None) -> Snapshot:
     """Прочитать отчёт цикла площадки, не ходя в сеть.
 
-    Ферма живёт там, где домен площадки закрыт, а цикл площадки — на раннере
-    GitHub. Отчёт в репозитории закрывает этот разрыв: квесты, снятые снаружи,
-    попадают в очередь и в дашборд, а человек видит, сколько отчёту часов.
+    Разбор обёртки общий для всех площадок (``agent.snapshots``); здесь
+    добавляется только своё — как выглядит квест AgentHansa и что делать без
+    отчёта вовсе.
     """
-    target = project_root() / (path or SNAPSHOT_REL)
-    if not target.exists():
-        return Snapshot(path=str(target), problem=(
-            "отчёта площадки ещё нет: включите цикл в GitHub Actions "
-            "(.github/workflows/hansa.yml) — он сохранит snapshots/hansa-report.json"
-        ))
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except Exception as exc:
-        return Snapshot(path=str(target), problem=f"отчёт площадки не читается: {exc}")
-    if not isinstance(payload, dict):
-        return Snapshot(path=str(target), problem="отчёт площадки неожиданного формата")
+    from agent import snapshots
 
-    generated = str(payload.get("generated_at") or "")
-    age: Optional[float] = None
-    if generated:
-        try:
-            moment = datetime.fromisoformat(generated.replace("Z", "+00:00"))
-            if moment.tzinfo is None:
-                moment = moment.replace(tzinfo=timezone.utc)
-            age = round((datetime.now(timezone.utc) - moment).total_seconds() / 3600.0, 2)
-        except ValueError:
-            age = None
-
-    rows = payload.get("quests")
-    if isinstance(rows, dict):
-        rows = rows.get("items") or rows.get("quests")
-    quests = [normalize_quest(row) for row in rows] if isinstance(rows, list) else []
+    report = snapshots.read(
+        path or SNAPSHOT_REL, fresh_hours=SNAPSHOT_FRESH_HOURS,
+        keys=("quests", "inbox", "items"), root=project_root(),
+    )
+    if report.problem:
+        return Snapshot(path=report.path, problem=report.problem)
+    quests = [normalize_quest(row) for row in report.rows]
     quests = [quest for quest in quests if quest.reward_usd > 0]
-    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
-    return Snapshot(path=str(target), generated_at=generated, age_hours=age,
-                    quests=quests, status=status)
+    status = report.payload.get("status")
+    return Snapshot(path=report.path, generated_at=report.generated_at,
+                    age_hours=report.age_hours, quests=quests,
+                    status=status if isinstance(status, dict) else {})
 
 
 def masked_key(key: str = "") -> str:

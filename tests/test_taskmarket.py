@@ -190,3 +190,154 @@ def test_harvest_uses_no_key_and_no_wallet() -> None:
     channel = FakeTaskMarket()
     channel.harvest()
     assert channel.fetches == 1
+
+
+# --- отчёт площадки: мост из GitHub Actions в локальную ферму ----------------
+
+def snapshot_file(root: Path, hours_ago: float = 1.0, tasks: List[Dict[str, Any]] = None) -> Path:
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    target = root / "snapshots" / "taskmarket-report.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+    target.write_text(json.dumps({
+        "channel": "taskmarket", "generated_at": stamp,
+        "count": len(tasks or []), "tasks": tasks or [],
+    }, ensure_ascii=False), encoding="utf-8")
+    return target
+
+
+class OfflineTaskMarket(FakeTaskMarket):
+    """Ферма без доступа к домену площадки: живой страницы нет, есть отчёт."""
+
+    def _fetch(self) -> str:
+        self.last_error = "площадка недоступна: SSLError"
+        return ""
+
+
+def test_snapshot_replaces_the_live_page(tmp_path: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import snapshots
+
+    snapshot_file(tmp_path, 2.0, parse_tasks(PAGE))
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+
+    found = OfflineTaskMarket().harvest()
+    assert found, "задачи из отчёта должны попадать в очередь без сети"
+    quest = next(opp for opp in found if "Quantum-Safe" in opp.title)
+    assert quest.payload["source"] == "snapshot"
+    assert "GitHub Actions" in quest.rationale
+    assert "2.0ч назад" in quest.rationale
+
+
+def test_an_old_snapshot_is_called_old(tmp_path: Path,
+                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import snapshots
+
+    snapshot_file(tmp_path, 40.0, parse_tasks(PAGE))
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    quest = [opp for opp in OfflineTaskMarket().harvest() if "Quantum-Safe" in opp.title][0]
+    assert "устарел" in quest.rationale
+
+
+def test_without_a_snapshot_the_channel_says_why(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import snapshots
+
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    channel = OfflineTaskMarket()
+    assert channel.harvest() == []
+    assert "отчёта" in channel.last_error, "нет отчёта — так и скажи"
+    assert "SSLError" in channel.last_error, "и причину сбоя живой страницы тоже"
+
+
+def test_snapshot_command_writes_a_readable_report(tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import main, snapshots
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "build_channel", lambda name: FakeTaskMarket())
+
+    assert main.main(["снапшот", "taskmarket"]) == 0
+    report = snapshots.read("snapshots/taskmarket-report.json", root=tmp_path)
+    assert report.usable
+    assert report.rows
+    assert any("Quantum-Safe" in row["title"] for row in report.rows)
+
+
+def test_snapshot_command_does_not_wipe_a_good_report(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """Один сбой сети на раннере не должен обнулять вчерашние задачи."""
+    import json
+
+    from agent import main, snapshots
+
+    target = snapshot_file(tmp_path, 1.0, [{"id": "keep", "title": "Старая добрая задача",
+                                            "reward_usd": 42.0}])
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "build_channel", lambda name: OfflineTaskMarket())
+
+    before = json.loads(target.read_text(encoding="utf-8"))
+    assert main.main(["снапшот", "taskmarket"]) == 1
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["count"] == 1 and payload["tasks"][0]["id"] == "keep"
+    assert payload["generated_at"] == before["generated_at"], (
+        "переписанный отчёт выдал бы старые данные за свежие"
+    )
+
+
+def test_dashboard_shows_the_platform_from_the_report(tmp_path: Path,
+                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import dashboard, snapshots
+
+    snapshot_file(tmp_path, 3.0, parse_tasks(PAGE))
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    dashboard._TASKMARKET["data"] = None
+    dashboard._TASKMARKET["at"] = 0.0
+
+    state = dashboard._taskmarket()
+    assert state["task_count"] >= 3
+    assert state["best_reward"] == 199.0
+    assert state["free_slots"] >= 1
+    assert not state["stale"]
+
+
+def test_dashboard_names_a_missing_report(tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import dashboard, snapshots
+
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    dashboard._TASKMARKET["data"] = None
+    dashboard._TASKMARKET["at"] = 0.0
+    state = dashboard._taskmarket()
+    assert "отчёта" in state["problem"] and state["tasks"] == []
+
+
+def test_cli_and_dashboard_agree_on_the_snapshot(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """Один и тот же файл: команда пишет, канал и дашборд читают то же самое."""
+    from agent import main, snapshots
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(main, "build_channel", lambda name: FakeTaskMarket())
+    assert main.main(["снапшот", "taskmarket", "--json"]) == 0
+
+    queued = OfflineTaskMarket().harvest()
+    from agent import dashboard
+    dashboard._TASKMARKET["data"] = None
+    dashboard._TASKMARKET["at"] = 0.0
+    shown = dashboard._taskmarket()
+    ids_in_queue = {opp.id for opp in queued}
+    ids_on_page = {f"taskmarket:{task['id']}" for task in shown["tasks"]}
+    assert ids_in_queue & ids_on_page, "дашборд и очередь должны видеть одни задачи"
+
+
+def test_unknown_channel_name_is_explained_not_a_traceback(capsys: pytest.CaptureFixture) -> None:
+    from agent import main
+
+    assert main.main(["снапшот", "agenthansa"]) == 2
+    output = capsys.readouterr().out
+    assert "Канала «agenthansa» нет" in output
+    assert "taskmarket" in output, "человеку нужен список существующих каналов"

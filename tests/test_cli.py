@@ -29,6 +29,7 @@ SAMPLE_ARGS: dict[str, list[str]] = {
     "inbox-skip": ["1"],
     "payout-rails": ["--country", "DE"],
     "eligibility": ["--country", "DE"],
+    "snapshot": ["taskmarket"],
     "dossier": ["id"],
 }
 

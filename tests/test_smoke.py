@@ -58,6 +58,7 @@ COMMAND_ARGS: Dict[str, List[str]] = {
     "cycle": ["--limit", "3", "--channel", "github_bounties"],
     "autopilot": ["--status"],
     "multitask": ["--plan"],
+    "snapshot": ["taskmarket", "--limit", "3"],
 }
 
 #: Команды, которые по устройству работают вечно: их нельзя запускать в тесте.

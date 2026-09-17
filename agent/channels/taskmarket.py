@@ -33,6 +33,10 @@ from agent.scoring import looks_like_junk, score_opportunity
 BASE = "https://taskmarket.dev"
 LIST_URL = f"{BASE}/tasks"
 
+#: Отчёт площадки, снятый на раннере GitHub: из песочницы домен закрыт.
+SNAPSHOT_REL = "snapshots/taskmarket-report.json"
+SNAPSHOT_FRESH_HOURS = 24.0
+
 #: Сколько работ на задачу превращают её в лотерею без приза. При таком
 #: соотношении шанс успеха падает почти до нуля, и звать человека туда нельзя.
 CROWD_LIMIT = 25
@@ -153,6 +157,14 @@ def _title_from(text: str, reward_match: re.Match[str]) -> str:
     return head.strip(" ·-—")
 
 
+def read_snapshot(root=None) -> Any:
+    """Задачи площадки из отчёта GitHub Actions — без сети и без ключа."""
+    from agent import snapshots
+
+    return snapshots.read(SNAPSHOT_REL, fresh_hours=SNAPSHOT_FRESH_HOURS,
+                          keys=("tasks", "items", "quests"), root=root)
+
+
 class TaskMarketChannel(Channel):
     name = "taskmarket"
     title = "Taskmarket: задачи в USDC на Base"
@@ -220,7 +232,27 @@ class TaskMarketChannel(Channel):
         return base
 
     def _to_opportunity(self, task: Dict[str, Any], hourly_rate: float) -> Optional[Opportunity]:
-        submissions = int(task["submissions"])
+        # Отчёт мог быть снят прошлой версией канала или собран руками: неполная
+        # строка не должна ронять весь проход.
+        try:
+            reward = float(task.get("reward_usd") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if reward <= 0:
+            return None
+        try:
+            submissions = max(0, int(task.get("submissions") or 0))
+        except (TypeError, ValueError):
+            submissions = 0
+        hours_left = task.get("hours_left")
+        try:
+            hours_left = None if hours_left is None else float(hours_left)
+        except (TypeError, ValueError):
+            hours_left = None
+        task = {**task, "reward_usd": reward, "submissions": submissions,
+                "hours_left": hours_left,
+                "title": str(task.get("title") or ""),
+                "url": str(task.get("url") or "")}
         probability = self._probability(submissions, task["hours_left"])
         if probability <= 0:
             return None
@@ -300,25 +332,50 @@ class TaskMarketChannel(Channel):
         self.last_error = ""
         hourly_rate = get_float("OPERATOR_HOURLY_RATE", 15.0)
 
-        html = self._fetch()
-        if not html:
-            return []
+        source = "live"
+        note = ""
+        tasks: List[Dict[str, Any]] = []
 
-        tasks = parse_tasks(html)
+        html = self._fetch()
+        if html:
+            tasks = parse_tasks(html)
+            if not tasks:
+                self.last_error = "разметка площадки изменилась — задачи не разобрались"
+        live_problem = self.last_error
+
         if not tasks:
-            self.last_error = "разметка площадки изменилась — задачи не разобрались"
-            return []
+            # Живой страницы нет (домен закрыт из песочницы или разметку сменили) —
+            # берём отчёт, снятый на раннере GitHub. Источник и возраст честно
+            # попадают в карточку задачи: человек должен знать, чему верит.
+            snapshot = read_snapshot()
+            if snapshot.usable:
+                tasks = list(snapshot.rows)
+                source = "snapshot"
+                note = snapshot.note("задачи Taskmarket")
+            else:
+                # Человеку нужны обе причины: и почему не вышло вживую, и почему
+                # не помог отчёт. Иначе он будет искать сбой канала на пустом месте.
+                reasons = [reason for reason in (live_problem, snapshot.problem) if reason]
+                self.last_error = "; ".join(reasons) or "задач нет"
+                return []
 
         fresh = [task for task in tasks
-                 if task["hours_left"] is None or task["hours_left"] >= -0.5]
-        if not fresh:
+                 if (task.get("hours_left") is None or float(task.get("hours_left")) >= -0.5)
+                 and float(task.get("reward_usd") or 0) > 0]
+        if not fresh and source == "live":
             self.last_error = "на площадке нет открытых задач"
 
         opportunities: List[Opportunity] = []
         for task in fresh:
             opportunity = self._to_opportunity(task, hourly_rate)
             if opportunity is not None:
+                opportunity.payload["source"] = source
+                if note:
+                    opportunity.payload["snapshot_note"] = note
+                    opportunity.rationale += f"; источник: {note}"
                 opportunities.append(opportunity)
 
+        if source == "snapshot" and live_problem:
+            self.last_error = ""  # отчёт заменяет живую страницу, это не сбой канала
         opportunities.sort(key=lambda item: item.score, reverse=True)
         return opportunities[:limit]

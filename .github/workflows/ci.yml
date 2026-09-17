@@ -63,3 +63,16 @@ jobs:
             401|200) echo "::notice::AgentHansa доступна с раннера (код $code), цикл площадки можно вести в Actions";;
             *) echo "::warning::AgentHansa ответила кодом $code";;
           esac
+      - name: Доступность Taskmarket с раннера
+        # Второй площадке ключ не нужен, но нужен доступ к домену: если и он
+        # закрыт с раннера, задачи придётся снимать откуда-то ещё.
+        run: |
+          code=$(curl -sS -o /tmp/taskmarket.html -w "%{http_code}" -m 25 \
+            https://taskmarket.dev/tasks 2>/dev/null || echo 000)
+          echo "Taskmarket HTTP $code"
+          case "$code" in
+            200) echo "::notice::Taskmarket доступен с раннера (код 200), задачи можно снимать отчётом";;
+            000) echo "::warning::Taskmarket недоступен с раннера (код 000)";;
+            *) echo "::warning::Taskmarket ответил кодом $code";;
+          esac
+          python -m agent.main снапшот taskmarket --limit 20 || true

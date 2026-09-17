@@ -104,6 +104,7 @@ def start_cycle(channel: Optional[str] = None) -> bool:
 _READINESS: Dict[str, Any] = {"at": 0.0, "data": None}
 _FOLLOWUP: Dict[str, Any] = {"at": 0.0, "data": None}
 _HANSA: Dict[str, Any] = {"at": 0.0, "data": None}
+_TASKMARKET: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
 def _followup(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
@@ -147,6 +148,52 @@ def _hansa(ttl: float = 60.0) -> Dict[str, Any]:
                               "quests": [], "quest_count": 0}
         _HANSA["at"] = now
     return _HANSA["data"]
+
+
+def _taskmarket(ttl: float = 60.0) -> Dict[str, Any]:
+    """Задачи второй площадки из отчёта, снятого в GitHub Actions.
+
+    Из песочницы домен taskmarket.dev закрыт, поэтому дашборд показывает отчёт:
+    сколько задач, какая лучшая награда, сколько отчёту часов и что с конкурентами.
+    """
+    now = time.time()
+    if _TASKMARKET["data"] is None or now - _TASKMARKET["at"] > ttl:
+        try:
+            from agent.channels import taskmarket as taskmarket_mod
+
+            snapshot = taskmarket_mod.read_snapshot()
+            rows = []
+            for row in snapshot.rows:
+                try:
+                    reward = float(row.get("reward_usd") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if reward <= 0:
+                    continue
+                rows.append({
+                    "id": str(row.get("id") or ""),
+                    "title": str(row.get("title") or ""),
+                    "url": str(row.get("url") or ""),
+                    "reward_usd": reward,
+                    "submissions": int(row.get("submissions") or 0),
+                    "hours_left": row.get("hours_left"),
+                    "status": str(row.get("status") or ""),
+                })
+            rows.sort(key=lambda item: item["reward_usd"], reverse=True)
+            _TASKMARKET["data"] = {
+                "problem": snapshot.problem,
+                "generated_at": snapshot.generated_at,
+                "age_hours": snapshot.age_hours,
+                "stale": snapshot.stale,
+                "tasks": rows[:8],
+                "task_count": len(rows),
+                "best_reward": rows[0]["reward_usd"] if rows else 0.0,
+                "free_slots": sum(1 for row in rows if row["submissions"] <= 2),
+            }
+        except Exception as exc:  # дашборд не должен падать из-за отчёта
+            _TASKMARKET["data"] = {"problem": f"{exc.__class__.__name__}: {exc}", "tasks": []}
+        _TASKMARKET["at"] = now
+    return _TASKMARKET["data"]
 
 
 def _readiness(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
@@ -217,6 +264,7 @@ def collect_state() -> Dict[str, Any]:
         "learning": learning_mod.learned_state(),
         "followup": _followup(),
         "hansa": _hansa(),
+        "taskmarket": _taskmarket(),
         "inbox": inbox_mod.pending(limit=10),
         "inbox_counts": inbox_mod.counts(),
         "queue": queue,
@@ -330,6 +378,7 @@ PAGE = r"""<!doctype html>
   <div class="card wide" style="margin-bottom:14px">
     <h2>Площадка агентов AgentHansa (без банка, USDC)</h2>
     <div id="hansa"></div>
+    <div id="taskmarket" style="margin-top:10px"></div>
 
     <h2>Автопилот и очередь к публикации</h2>
     <div id="autopilot"></div>
@@ -479,6 +528,34 @@ async function loadMoney(country) {
     const data = await (await fetch(url)).json();
     renderMoney(data);
   } catch (e) { /* keep previous view */ }
+}
+
+function renderTaskmarket(t) {
+  if (!t) { $("taskmarket").innerHTML = ""; return; }
+  if (t.problem) {
+    $("taskmarket").innerHTML =
+      `<div class="muted">Taskmarket: ${esc(t.problem)}</div>`;
+    return;
+  }
+  const age = t.age_hours == null ? "время неизвестно" : t.age_hours.toFixed(1) + " ч назад";
+  const cls = t.stale ? "wait" : "on";
+  const label = t.stale ? "отчёт устарел" : "отчёт свежий";
+  const tasks = (t.tasks || []).map(item => `
+    <div class="item ${item.reward_usd >= 50 && item.submissions <= 2 ? "hot" : ""}">
+      <div class="t"><b>${money(item.reward_usd)}</b> ${esc(item.title)}</div>
+      <div class="m">работ прислано ${item.submissions}` +
+      (item.hours_left == null ? "" : ` · осталось ${item.hours_left} ч`) +
+      (item.status ? ` · ${esc(item.status)}` : "") + `</div>
+    </div>`).join("");
+  $("taskmarket").innerHTML = `
+    <div class="item ${t.stale ? "cold" : "hot"}">
+      <div class="t"><span class="pill ${cls}">${label}</span>
+        <b>Taskmarket: задач ${t.task_count}</b> · лучшая ${money(t.best_reward)} ·
+        без толпы ${t.free_slots} · снято ${esc(age)}</div>
+      <div class="m">Платит USDC на Base в кошелёк, ключ площадки не нужен.
+        Отправку работы делает человек — робот готовит текст и доказательство.</div>
+    </div>
+    ${tasks || '<div class="muted">Задач в отчёте нет.</div>'}`;
 }
 
 function renderHansa(a) {
@@ -704,6 +781,7 @@ async function refresh() {
   renderAutopilot(s.autopilot, s.inbox_counts);
   renderFollowup(s.followup);
   renderHansa(s.hansa);
+  renderTaskmarket(s.taskmarket);
   renderWatchdog(s.watchdog);
   renderLearning(s.learning);
   renderInbox(s.inbox, s.inbox_counts);
