@@ -99,3 +99,21 @@ def test_a_cycle_can_be_limited_by_a_russian_channel_name(monkeypatch: pytest.Mo
     monkeypatch.setattr(farm, "run_channel", fake_run_channel)
     farm.run_cycle(channels=["площадки", "контесты"], parallel=False)
     assert called == ["agent_marketplaces", "audit_contests"]
+
+
+def test_next_lists_refused_tasks_with_reasons(monkeypatch, capsys) -> None:
+    """Отказ должен быть виден: иначе «не берём» читается как «не нашли»."""
+    from agent import main
+
+    monkeypatch.setattr(main, "next_actions", lambda limit=5: [])
+    monkeypatch.setattr(main, "floor_report", lambda: {
+        "queued": 3, "floor": 3.0, "unmeasured": 0, "near": [],
+    })
+    monkeypatch.setattr("agent.farm.refused_actions", lambda limit=10: [{
+        "id": "taskmarket:0xgpu", "reason": "нужен NVIDIA GPU", "decided": "2026-09-17",
+    }])
+    args = main.argparse.Namespace(limit=5, command="next")
+    assert main.cmd_next(args) == 0
+    out = capsys.readouterr().out
+    assert "Осознанно не берём" in out
+    assert "нужен NVIDIA GPU" in out
