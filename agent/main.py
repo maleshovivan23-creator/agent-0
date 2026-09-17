@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent import autopilot as autopilot_mod
+from agent import setupenv
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
 from agent import eligibility, payouts, quests
@@ -712,6 +714,62 @@ def cmd_quest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Заполнить .env: секреты вводятся скрыто и никогда не печатаются."""
+    if args.show:
+        current = setupenv.read_env()
+        print(paint(f"Файл {setupenv.env_path()}", BOLD))
+        if not current:
+            print("  ещё не создан — запустите: python -m agent.main настройка")
+            return 0
+        for field in setupenv.FIELDS:
+            value = (current.get(field.name) or "").strip()
+            shown = setupenv.mask(value) if field.secret else (value or "не задано")
+            print(f"  {field.title}: {shown}")
+        mode = oct(setupenv.env_path().stat().st_mode & 0o777)
+        print(f"  права на файл: {mode}")
+        return 0
+
+    answers = {
+        "GITHUB_TOKEN": args.token,
+        "ELIGIBILITY_COUNTRY": args.country,
+        "PAYOUT_WALLET": args.wallet,
+        "AGENTHANSA_API_KEY": args.marketplace_key,
+        "TELEGRAM_BOT_TOKEN": args.telegram_token,
+        "TELEGRAM_CHAT_ID": args.telegram_chat,
+    }
+    interactive = not args.no_ask
+    if interactive and not any(answers.values()):
+        print(paint("Настройка AGENT-0. Секреты вводятся скрыто и не показываются на экране.",
+                    BOLD))
+        print(paint("Enter пропускает необязательные пункты. Прервать: Ctrl+C.", DIM))
+
+    updates, problems, notes = setupenv.collect(answers, interactive=interactive)
+    if updates:
+        setupenv.update_env(updates)
+        # процесс уже загрузил окружение на старте — обновляем его на месте,
+        # иначе проверка готовности увидит старые значения
+        os.environ.update(updates)
+
+    for line in setupenv.summary(updates, problems, notes):
+        print(line)
+
+    if problems:
+        print()
+        print(paint("Исправьте и повторите: python -m agent.main настройка", YELLOW))
+        return 2
+
+    if updates:
+        print()
+        print(paint("Проверяю готовность заново:", BOLD))
+        return cmd_doctor(args) if hasattr(args, "json") else cmd_doctor(
+            argparse.Namespace(json=False)
+        )
+    print()
+    print(paint("Ничего не изменено.", DIM))
+    return 0
+
+
 def cmd_autopilot(args: argparse.Namespace) -> int:
     if args.status:
         data = autopilot_mod.status()
@@ -866,6 +924,7 @@ ALIASES: Dict[str, str] = {
     "бухгалтерия": "ledger",
     "правила": "policy",
     "кто-я": "whoami",
+    "настройка": "setup",
     "автопилот": "autopilot",
     "входящие": "inbox",
     "входящие-отправлено": "inbox-done",
@@ -961,6 +1020,23 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    setup_cmd = sub.add_parser(
+        "setup",
+        help="заполнить .env (секреты вводятся скрыто)",
+        epilog="Секреты не показываются на экране и не попадают в историю команд. "
+               "Файл .env закрывается правами 600 и уже исключён из git.",
+    )
+    setup_cmd.add_argument("--token", default=None, help="токен GitHub")
+    setup_cmd.add_argument("--country", default=None, help="код страны получения денег")
+    setup_cmd.add_argument("--wallet", default=None, help="адрес кошелька (0x… или T…)")
+    setup_cmd.add_argument("--marketplace-key", default=None, help="ключ площадки квестов")
+    setup_cmd.add_argument("--telegram-token", default=None)
+    setup_cmd.add_argument("--telegram-chat", default=None)
+    setup_cmd.add_argument("--no-ask", action="store_true",
+                           help="ничего не спрашивать, использовать только переданное")
+    setup_cmd.add_argument("--show", action="store_true",
+                           help="показать текущие значения маской")
+
     auto = sub.add_parser("autopilot", help="автономный режим: работает без вас")
     auto.add_argument("--once", action="store_true", help="один проход и выход")
     auto.add_argument("--ticks", type=int, default=None, help="ограничить число проходов")
@@ -1028,6 +1104,7 @@ HANDLERS = {
     "ledger": cmd_ledger,
     "policy": cmd_policy,
     "whoami": cmd_whoami,
+    "setup": cmd_setup,
     "autopilot": cmd_autopilot,
     "inbox": cmd_inbox,
     "inbox-done": lambda args: cmd_inbox_resolve(args, "published"),
