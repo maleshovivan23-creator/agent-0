@@ -26,7 +26,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from agent import eligibility, payouts
+from agent import doctor as doctor_mod
+from agent import eligibility, payouts, quests
 from agent.config import get_env, load_environment, project_root
 from agent.farm import next_actions, overview, run_cycle
 from agent.ledger import (
@@ -649,6 +650,64 @@ def cmd_payout_rails(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    data = doctor_mod.readiness()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0 if data["can_start"] else 1
+
+    print(paint("Проверка готовности: что нужно, чтобы ферма начала зарабатывать", BOLD))
+    print()
+    marks = {"ok": paint("ок ", GREEN), "warn": paint("!  ", YELLOW), "block": paint("СТОП", RED)}
+    for check in data["checks"]:
+        print(f"  [{marks[check['status']]}] {check['title']}: {check['detail']}")
+        if check["status"] != "ok" and check["impact"]:
+            print(f"         зачем: {check['impact']}")
+
+    print()
+    if data["next_actions"]:
+        print(paint("Что мешает и как починить — по порядку:", BOLD))
+        for index, item in enumerate(data["next_actions"], 1):
+            level = paint("блокер", RED) if item["required"] and item["status"] != "ok" else paint("важно", YELLOW)
+            print(f"  {index}. [{level}] {item['title']}: {item['fix']}")
+    print()
+    print(paint(data["verdict"], BOLD if data["can_start"] else YELLOW))
+    print()
+    print(paint("Путь к первой выплате:", BOLD))
+    for step in data["start_plan"]:
+        print(f"  {step}")
+    return 0 if data["can_start"] else 1
+
+
+def cmd_quest(args: argparse.Namespace) -> int:
+    opportunity = get_opportunity(args.opportunity_id)
+    if not opportunity:
+        print(f"Возможность {args.opportunity_id} не найдена.")
+        return 1
+    payload = json.loads(opportunity["payload"] or "{}")
+    opportunity["payload"] = payload
+
+    if payload.get("platform") is None:
+        print(paint("Это не квест площадки — черновик всё равно собран, "
+                    "но проверьте формат задания на площадке.", YELLOW))
+
+    print(paint("Готовлю черновик заявки (подагенты)...", DIM))
+    path = quests.save_submission(opportunity)
+    result = quests.submission_markdown(opportunity)
+
+    print()
+    print(result["markdown"])
+    print()
+    if result["words"] < quests.WORD_MIN:
+        print(paint(f"Черновик {result['words']} слов — короче нормы {quests.WORD_MIN}–"
+                    f"{quests.WORD_MAX}. Допишите содержательную часть, объём считается "
+                    f"проверяющим.", YELLOW))
+    print(paint(f"Сохранено: {path.relative_to(project_root())}", DIM))
+    print(paint("Отправка и ключ площадки — вашими руками: ферма не публикует текст "
+                "от вашего имени.", DIM))
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from agent.dashboard import serve
 
@@ -744,6 +803,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    doctor_cmd = sub.add_parser("doctor", help="что нужно, чтобы начать зарабатывать")
+    doctor_cmd.add_argument("--json", action="store_true")
+
+    quest = sub.add_parser("quest", help="черновик заявки на квест площадки")
+    quest.add_argument("opportunity_id")
+
     serve = sub.add_parser("serve", help="веб-дашборд")
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8000)
@@ -772,6 +837,8 @@ HANDLERS = {
     "ledger": cmd_ledger,
     "policy": cmd_policy,
     "whoami": cmd_whoami,
+    "doctor": cmd_doctor,
+    "quest": cmd_quest,
     "serve": cmd_serve,
 }
 

@@ -55,6 +55,7 @@ def test_quests_become_opportunities(monkeypatch: pytest.MonkeyPatch) -> None:
                 "submission_count": 5,
                 "submission_cap": 50,
                 "description": "Research " * 120,
+                "requirements": "Cite every source",
                 "url": "https://agenthansa.com/quests/q1",
             }
         ]
@@ -66,6 +67,8 @@ def test_quests_become_opportunities(monkeypatch: pytest.MonkeyPatch) -> None:
     assert item.reward_usd == 30
     assert item.payload["payout_rail"] == "crypto_usdc"
     assert "USDC" in item.rationale
+    assert item.payload["description"].startswith("Research")
+    assert item.payload["requirements"] == "Cite every source"
     assert item.payload["verify_before_work"]
 
 

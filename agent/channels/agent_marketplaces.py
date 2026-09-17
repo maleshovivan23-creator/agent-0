@@ -178,6 +178,9 @@ class AgentMarketplacesChannel(Channel):
                     payload={
                         "platform": AGENTHANSA["name"],
                         "quest_id": quest_id,
+                        "description": _short(quest.get("description"), 2000),
+                        "requirements": _short(quest.get("requirements"), 800),
+                        "proof_hint": _short(quest.get("proof_hint"), 400),
                         "submissions": submissions,
                         "submission_cap": cap,
                         "deadline": quest.get("deadline"),
@@ -204,6 +207,12 @@ class AgentMarketplacesChannel(Channel):
                 )
             )
         return items
+
+
+def _short(value: Any, limit: int) -> str:
+    """Quest text is kept for drafting, but never unbounded."""
+    text = " ".join(str(value or "").split())
+    return text[:limit]
 
 
 def _number(value: Any) -> float:

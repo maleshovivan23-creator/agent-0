@@ -30,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
+from agent import doctor as doctor_mod
 from agent import payouts as payout_rails
 from agent.config import get_env
 from agent.farm import low_value, next_actions, overview, run_cycle
@@ -94,6 +95,18 @@ def start_cycle(channel: Optional[str] = None) -> bool:
     return True
 
 
+_READINESS: Dict[str, Any] = {"at": 0.0, "data": None}
+
+
+def _readiness(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
+    """Doctor checks hit the network once, then stay cached for the dashboard."""
+    now = time.time()
+    if refresh or _READINESS["data"] is None or now - _READINESS["at"] > ttl:
+        _READINESS["data"] = doctor_mod.readiness()
+        _READINESS["at"] = now
+    return _READINESS["data"]
+
+
 def collect_state() -> Dict[str, Any]:
     ledger = summary()
     stats = analytics()
@@ -147,6 +160,7 @@ def collect_state() -> Dict[str, Any]:
         "money": payout_rails.recommend(country).as_dict() if country else None,
         "rails": payout_rails.table(),
         "country": country,
+        "readiness": _readiness(),
         "queue": queue,
         "contests": contests,
         "next": next_actions(limit=5),
@@ -255,6 +269,19 @@ PAGE = r"""<!doctype html>
     <div class="muted" style="font-size:11.5px;margin-top:6px" id="advice"></div>
   </div>
 
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Готовность: что мешает заработать</h2>
+    <div id="readiness"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="tiny" id="refresh-doctor">Проверить заново</button>
+      <span class="muted" style="font-size:11.5px">Проверка делает реальный запрос к GitHub и смотрит настройки.</span>
+    </div>
+    <details style="margin-top:10px">
+      <summary class="muted" style="cursor:pointer;font-size:12px">Путь к первой выплате — 7 шагов</summary>
+      <div id="start-plan" class="muted" style="font-size:12px;margin-top:8px"></div>
+    </details>
+  </div>
+
   <div class="grid" style="margin-bottom:14px">
     <div class="card wide">
       <h2>Как получить деньги</h2>
@@ -355,6 +382,12 @@ async function post(url, body) {
   refresh();
 }
 $("run").onclick = () => post("/api/run", {channel: $("channel").value || null});
+$("refresh-doctor").onclick = async () => {
+  $("refresh-doctor").textContent = "Проверяю…";
+  try { const data = await (await fetch("/api/doctor")).json(); renderReadiness(data); }
+  finally { $("refresh-doctor").textContent = "Проверить заново"; }
+};
+
 $("check-country").onclick = () => loadMoney(($("country").value || "").trim().toUpperCase());
 $("country").addEventListener("keydown", (e) => { if (e.key === "Enter") $("check-country").click(); });
 
@@ -364,6 +397,22 @@ async function loadMoney(country) {
     const data = await (await fetch(url)).json();
     renderMoney(data);
   } catch (e) { /* keep previous view */ }
+}
+
+function renderReadiness(data) {
+  if (!data) { $("readiness").innerHTML = '<span class="muted">Проверка недоступна.</span>'; return; }
+  const style = {ok: ["on", "ок"], warn: ["info", "важно"], block: ["off", "блокер"]};
+  const rows = (data.checks || []).map(c => {
+    const [cls, label] = style[c.status] || ["info", c.status];
+    const fix = c.status === "ok" ? "" :
+      `<div class="m"><b>Как исправить:</b> ${esc(c.fix)}${c.impact ? ` · ${esc(c.impact)}` : ""}</div>`;
+    return `<div class="item ${c.status === "block" ? "cold" : (c.status === "warn" ? "" : "hot")}">
+      <div class="t"><span class="pill ${cls}">${label}</span> <b>${esc(c.title)}</b></div>
+      <div class="m">${esc(c.detail)}</div>${fix}</div>`;
+  }).join("");
+  $("readiness").innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:8px">
+      <b>${esc(data.verdict)}</b></div>${rows}`;
+  $("start-plan").innerHTML = (data.start_plan || []).map(s => esc(s)).join("<br>");
 }
 
 function renderMoney(data) {
@@ -424,6 +473,8 @@ async function refresh() {
   else { pill.className = "pill on"; pill.textContent = "готов"; }
   $("run").disabled = R.running;
   $("log").textContent = R.log.length ? R.log.join("\n") : "—";
+
+  renderReadiness(s.readiness);
 
   const D = s.farm.directions || {directions: [], advice: []};
   $("directions").innerHTML = (D.directions || []).map(d => `
@@ -560,6 +611,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == "/api/doctor":
+            self._json(_readiness(refresh=True))
             return
         if path == "/api/payouts":
             query = parse_qs(parsed.query) if (parsed := urlparse(self.path)) else {}
