@@ -320,3 +320,64 @@ def test_dashboard_renders_a_full_state(tmp_path: Path) -> None:
 def test_dashboard_survives_a_partial_state(broken: Dict[str, Any], tmp_path: Path) -> None:
     result = run_dashboard_js(broken, tmp_path)
     assert result.returncode == 0, result.stderr
+
+
+# --- 8. сутки наблюдений считаются один раз, а не по числу старых строк -------
+
+
+@pytest.mark.parametrize("with_day_and_samples", [False, True])
+def test_observations_of_one_day_are_not_multiplied_by_old_rows(
+        with_day_and_samples: bool, tmp_path: Path) -> None:
+    """Живой случай: 19 проходов показывались как 322.
+
+    Раньше на каждый проход писалась своя строка, потом появился столбец `day`.
+    После перехода на суточную агрегацию суммирующий UPDATE трогал все строки
+    суток сразу, и один проход считался столько раз, сколько строк накопилось.
+    """
+    import sqlite3
+
+    from agent.ledger import db_path
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    path = db_path()
+    path.unlink(missing_ok=True)
+    legacy = sqlite3.connect(str(path))
+    columns = ("id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, subject TEXT, channel TEXT, "
+               "value REAL, detail TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP")
+    if with_day_and_samples:
+        columns += ", day TEXT, samples INTEGER DEFAULT 0"
+    legacy.execute(f"CREATE TABLE learning_events ({columns})")
+    for _ in range(9):
+        if with_day_and_samples:
+            legacy.execute(
+                "INSERT INTO learning_events(kind, subject, value, samples, day) "
+                "VALUES('observation', 'q', 5, 1, ?)", (day,))
+        else:
+            legacy.execute(
+                "INSERT INTO learning_events(kind, subject, value) VALUES('observation', 'q', 5)")
+    if with_day_and_samples:
+        legacy.execute("INSERT INTO learning_events(kind, subject, value, samples, detail) "
+                       "VALUES('decision', 'q', 1, 1, '{}')")
+    else:
+        legacy.execute("INSERT INTO learning_events(kind, subject, value, detail) "
+                       "VALUES('decision', 'q', 1, '{}')")
+    legacy.commit()
+    legacy.close()
+
+    learning.observe("q", 7)
+    stats = {item.subject: item for item in learning.query_stats()}["q"]
+    assert stats.observations == 10, "9 старых строк должны были стать одним проходом, плюс новый"
+    assert stats.new_items == pytest.approx(45 + 7)
+
+    learning.observe("q", 3)
+    stats = {item.subject: item for item in learning.query_stats()}["q"]
+    assert stats.observations == 11, "второй проход добавляет ровно один проход"
+    assert stats.new_items == pytest.approx(45 + 7 + 3)
+    assert stats.published == 1, "решения человека схлопывать нельзя"
+
+    conn = connect()
+    rows = conn.execute(
+        "SELECT COUNT(*) AS n FROM learning_events WHERE kind='observation' AND subject='q'"
+    ).fetchone()["n"]
+    conn.close()
+    assert rows == 1

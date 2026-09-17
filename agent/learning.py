@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -74,6 +75,55 @@ def _ensure_schema() -> None:
     finally:
         conn.close()
 
+    _collapse_old_observations()
+
+
+def _collapse_old_observations() -> None:
+    """Схлопнуть наблюдения, накопленные до суточной агрегации.
+
+    Раньше на каждый проход писалась своя строка, а `day` проставился уже при
+    миграции: за сутки по одному запросу лежало несколько десятков строк. Если
+    оставить их, то суммирующий UPDATE трогает их все сразу и статистика
+    раздувается в разы (живой случай: 19 проходов выглядели как 322). Поэтому
+    один раз сводим строки суток в самую раннюю, остальные удаляем.
+    """
+    conn = connect()
+    try:
+        done = get_state("learning.collapsed")
+        if done:
+            return
+        cursor = conn.execute(
+            "SELECT COUNT(*) AS n FROM (SELECT 1 FROM learning_events " 
+            "WHERE kind='observation' AND day IS NOT NULL GROUP BY subject, day HAVING COUNT(*) > 1)"
+        )
+        if cursor.fetchone()["n"]:
+            conn.execute(
+                "UPDATE learning_events SET value = ("
+                "  SELECT SUM(value) FROM learning_events AS o WHERE o.kind='observation' "
+                "  AND o.day = learning_events.day AND o.subject = learning_events.subject), "
+                "samples = ("
+                "  SELECT SUM(samples) FROM learning_events AS o WHERE o.kind='observation' "
+                "  AND o.day = learning_events.day AND o.subject = learning_events.subject) "
+                "WHERE kind='observation' AND id IN ("
+                "  SELECT MIN(id) FROM learning_events WHERE kind='observation' "
+                "  AND day IS NOT NULL GROUP BY subject, day)"
+            )
+            conn.execute(
+                "DELETE FROM learning_events WHERE kind='observation' AND day IS NOT NULL "
+                "AND id NOT IN (SELECT MIN(id) FROM learning_events WHERE kind='observation' "
+                "AND day IS NOT NULL GROUP BY subject, day)"
+            )
+        # уникальный индекс можно ставить только после схлопывания: пока в базе
+        # лежат старые дубли, он не создастся
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_observation_day "
+            "ON learning_events(subject, day) WHERE kind = 'observation'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    set_state("learning.collapsed", "1")
+
 
 def record(kind: str, subject: str, channel: str = "", value: float = 0.0,
            detail: str = "") -> None:
@@ -89,17 +139,26 @@ def record(kind: str, subject: str, channel: str = "", value: float = 0.0,
     try:
         if kind == "observation":
             day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            cursor = conn.execute(
+            # Строка суток ровно одна: обновляем самую раннюю. Условие «day=?»
+            # без id обновляло бы все строки суток сразу и считало один проход
+            # несколько раз. Уникальный индекс закрывает гонку двух процессов.
+            update = (
                 "UPDATE learning_events SET value = value + ?, samples = samples + 1, "
-                "detail = ? WHERE kind = ? AND subject = ? AND day = ?",
-                (float(value), detail, kind, subject, day),
+                "detail = ? WHERE kind = ? AND subject = ? AND day = ? "
+                "AND id = (SELECT MIN(id) FROM learning_events WHERE kind = ? AND "
+                "subject = ? AND day = ?)"
             )
+            args = (float(value), detail, kind, subject, day, kind, subject, day)
+            cursor = conn.execute(update, args)
             if cursor.rowcount == 0:
-                conn.execute(
-                    "INSERT INTO learning_events(kind, subject, channel, value, samples, "
-                    "detail, day) VALUES(?, ?, ?, ?, ?, ?, ?)",
-                    (kind, subject, channel, float(value), 1, detail, day),
-                )
+                try:
+                    conn.execute(
+                        "INSERT INTO learning_events(kind, subject, channel, value, samples, "
+                        "detail, day) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                        (kind, subject, channel, float(value), 1, detail, day),
+                    )
+                except sqlite3.IntegrityError:
+                    conn.execute(update, args)
         else:
             conn.execute(
                 "INSERT INTO learning_events(kind, subject, channel, value, samples, detail) "
