@@ -32,6 +32,8 @@ class Snapshot:
     age_hours: Optional[float] = None
     rows: List[Dict[str, Any]] = field(default_factory=list)
     payload: Dict[str, Any] = field(default_factory=dict)
+    #: Как отчёт получен: ``scheduled``/``manual`` (раннер) или ``manual-local``.
+    run: str = ""
     problem: str = ""
     fresh_hours: float = FRESH_HOURS
 
@@ -50,7 +52,10 @@ class Snapshot:
         when = self.generated_at or "время неизвестно"
         age = "" if self.age_hours is None else f", {self.age_hours:.1f}ч назад"
         tail = " — отчёт устарел, проверьте задачи на площадке" if self.stale else ""
-        return f"{what} из отчёта GitHub Actions ({when}{age}){tail}"
+        origin = ("из отчёта, снятого вручную"
+                  if "manual" in str(self.run or "")
+                  else "из отчёта GitHub Actions")
+        return f"{what} {origin} ({when}{age}){tail}"
 
 
 def read(rel_path: str, fresh_hours: float = FRESH_HOURS,
@@ -95,6 +100,7 @@ def read(rel_path: str, fresh_hours: float = FRESH_HOURS,
         age_hours=age_hours(generated),
         rows=[row for row in rows if isinstance(row, dict)],
         payload=payload,
+        run=str(payload.get("run") or ""),
         fresh_hours=fresh_hours,
     )
 

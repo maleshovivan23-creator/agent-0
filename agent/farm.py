@@ -391,6 +391,19 @@ def _steps_for(channel: str, opportunity_id: str, payload: Dict[str, Any]) -> Li
             f"{quest_id} --файл <черновик> --подтверждаю",
         ]
         return steps
+    if channel == "taskmarket":
+        # У задачи нет репозитория и GitHub-API тут ни при чём: работа живёт на
+        # самой площадке, а робот готовит текст и доказательство.
+        url = str(payload.get("url") or "")
+        steps = [f"открыть задачу и прочитать критерии приёмки: {url}" if url
+                 else "открыть задачу на площадке и прочитать критерии приёмки"]
+        if payload.get("source") == "snapshot":
+            steps.append("строки взяты из отчёта — сверьте награду и срок на площадке")
+        steps += [
+            f"python -m agent.main черновик {opportunity_id}",
+            "человек отправляет работу на площадке от своего имени",
+        ]
+        return steps
     return [
         f"python -m agent.main досье {opportunity_id}",
         f"python -m agent.main план {opportunity_id}",

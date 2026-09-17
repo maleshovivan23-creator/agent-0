@@ -1,0 +1,54 @@
+{
+  "channel": "taskmarket",
+  "run": "manual",
+  "generated_at": "2026-09-17T15:09:26+00:00",
+  "note": "Снято вручную из открытой выдачи; workflow заменит этот отчёт своим.",
+  "count": 4,
+  "error": "",
+  "tasks": [
+    {
+      "id": "0x5f596b1a81417834a4366655bd4e6194819f5404a62c919c6953ae9bc92860bc",
+      "url": "https://taskmarket.dev/tasks/0x5f596b1a81417834a4366655bd4e6194819f5404a62c919c6953ae9bc92860bc",
+      "title": "Quantum-Safe Bitcoin: share 199 USDC for verified Yukon improvements",
+      "reward_usd": 199.0,
+      "submissions": 2,
+      "hours_left": 696.0,
+      "mode": "bounty",
+      "status": "Open",
+      "parsed_at": "2026-09-17T15:09:26+00:00"
+    },
+    {
+      "id": "0xd7cc0add611322a2277d6124a0490d968ba835a3675b7cc7fbfe411b8cf72a9a",
+      "url": "https://taskmarket.dev/tasks/0xd7cc0add611322a2277d6124a0490d968ba835a3675b7cc7fbfe411b8cf72a9a",
+      "title": "A Travel Poster for a Place You Can Never Visit",
+      "reward_usd": 2.0,
+      "submissions": 44,
+      "hours_left": 14.0,
+      "mode": "bounty",
+      "status": "Open",
+      "parsed_at": "2026-09-17T15:09:26+00:00"
+    },
+    {
+      "id": "0x935a2d3c8c949e8c58feacc6f9469142a1ad0d4a07c2922d0797bf2929a0a7b9",
+      "url": "https://taskmarket.dev/tasks/0x935a2d3c8c949e8c58feacc6f9469142a1ad0d4a07c2922d0797bf2929a0a7b9",
+      "title": "Execute one bounded onchain action through KeeperHub",
+      "reward_usd": 0.01,
+      "submissions": 23,
+      "hours_left": -1.0,
+      "mode": "bounty",
+      "status": "Open",
+      "parsed_at": "2026-09-17T15:09:26+00:00"
+    },
+    {
+      "id": "0xfeb54178b019ece8cfe2cc207d0ee8e310b4a1ebac1be5d9171109dd14265e68",
+      "url": "https://taskmarket.dev/tasks/0xfeb54178b019ece8cfe2cc207d0ee8e310b4a1ebac1be5d9171109dd14265e68",
+      "title": "Autonomous claim task for Throttle pipeline verification",
+      "reward_usd": 12.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "Awaiting buyer review",
+      "parsed_at": "2026-09-17T15:09:26+00:00"
+    }
+  ]
+}

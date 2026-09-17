@@ -341,3 +341,58 @@ def test_unknown_channel_name_is_explained_not_a_traceback(capsys: pytest.Captur
     output = capsys.readouterr().out
     assert "Канала «agenthansa» нет" in output
     assert "taskmarket" in output, "человеку нужен список существующих каналов"
+
+
+# --- шаги для человека: у площадки свой маршрут --------------------------------
+
+def test_steps_open_the_task_instead_of_a_github_tool() -> None:
+    from agent.farm import _steps_for
+
+    steps = _steps_for("taskmarket", "taskmarket:0xabc", {
+        "url": "https://taskmarket.dev/tasks/0xabc", "source": "snapshot",
+        "reward_usd": 199.0,
+    })
+    text = " ".join(steps)
+    assert "taskmarket.dev/tasks/0xabc" in text
+    assert "черновик taskmarket:0xabc" in text
+    assert "человек отправляет работу" in text
+    assert "досье" not in text and "план" not in text, "у площадки нет репозитория"
+
+
+def test_steps_warn_that_the_snapshot_may_be_stale() -> None:
+    from agent.farm import _steps_for
+
+    steps = _steps_for("taskmarket", "taskmarket:0xabc", {"source": "snapshot"})
+    assert any("сверьте награду и срок" in step for step in steps)
+    live = _steps_for("taskmarket", "taskmarket:0xabc", {"source": "live"})
+    assert not any("сверьте награду" in step for step in live)
+
+
+def test_snapshot_run_kind_is_named_in_the_note(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from agent import snapshots
+
+    target = tmp_path / "snapshots" / "taskmarket-report.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({
+        "channel": "taskmarket", "run": "manual", "generated_at": "2026-09-17T10:00:00+00:00",
+        "tasks": [],
+    }), encoding="utf-8")
+    report = snapshots.read("snapshots/taskmarket-report.json", root=tmp_path)
+    assert "снятого вручную" in report.note("задачи")
+
+
+def test_scheduled_report_is_credited_to_actions(tmp_path: Path) -> None:
+    import json
+
+    from agent import snapshots
+
+    target = tmp_path / "snapshots" / "hansa-report.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({
+        "run": "scheduled", "generated_at": "2026-09-17T10:00:00+00:00", "quests": [],
+    }), encoding="utf-8")
+    report = snapshots.read("snapshots/hansa-report.json", root=tmp_path)
+    assert "GitHub Actions" in report.note("квесты")
