@@ -212,7 +212,7 @@ def _prepare_one(opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"skipped": True, "reason": "контест завершён"}
 
     kind_hint = {"agent_marketplaces": "quest", "github_bounties": "application",
-                 "audit_contests": "brief"}.get(channel)
+                 "audit_contests": "brief", "taskmarket": "task"}.get(channel)
     if kind_hint and inbox.has_ready(str(opportunity["id"]), kind_hint):
         return None
 
@@ -309,6 +309,30 @@ def _prepare_one(opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "opportunity_id": str(opportunity["id"]),
             "title": str(opportunity["title"]),
             "path": path,
+        }
+
+    if channel == "taskmarket":
+        from agent.channels import taskmarket
+
+        saved = taskmarket.save_draft(opportunity)
+        rel = str(saved.relative_to(project_root()))
+        item_id = inbox.add(
+            opportunity_id=str(opportunity["id"]),
+            channel=channel,
+            kind="task",
+            title=str(opportunity.get("title") or "задача площадки"),
+            path=rel,
+            summary=(
+                f"${float(opportunity.get('reward_usd') or 0):,.0f} · "
+                "черновик работы, отправляет человек"
+            ),
+        )
+        return {
+            "inbox_id": item_id,
+            "kind": "task",
+            "opportunity_id": str(opportunity["id"]),
+            "title": str(opportunity.get("title") or "задача площадки"),
+            "path": rel,
         }
 
     return {"skipped": True, "reason": f"канал {channel} не готовит артефакты"}

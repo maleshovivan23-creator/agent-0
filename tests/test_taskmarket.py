@@ -396,3 +396,62 @@ def test_scheduled_report_is_credited_to_actions(tmp_path: Path) -> None:
     }), encoding="utf-8")
     report = snapshots.read("snapshots/hansa-report.json", root=tmp_path)
     assert "GitHub Actions" in report.note("квесты")
+
+
+def test_autopilot_prepares_a_draft_for_a_platform_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Лучшая задача площадки не должна оставаться без работы робота."""
+    from agent import autopilot, config, inbox
+    from agent.channels import taskmarket as tm
+    from agent.ledger import Opportunity, upsert_opportunities
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "auto.db"))
+    monkeypatch.setattr(autopilot, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(config, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(tm, "project_root", lambda: tmp_path)
+    (tmp_path / "reports").mkdir()
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xabc", channel="taskmarket", title="Quantum-Safe Bitcoin",
+        reward_usd=199.0, url="https://taskmarket.dev/tasks/0xabc",
+        payload={"submissions": 2, "ev_per_hour": 17.0},
+    )])
+    monkeypatch.setattr(autopilot, "next_actions",
+                        lambda limit=5, min_ev_per_hour=None: [{"id": "taskmarket:0xabc"}])
+
+    prepared, skipped = autopilot.prepare()
+    assert len(prepared) == 1, skipped
+    assert prepared[0]["kind"] == "task"
+
+    item = inbox.pending()[0]
+    assert item["kind_title"] == "Черновик работы"
+    assert item["action"] == "Отправить работу на площадке от своего имени"
+    text = inbox.text(int(item["id"]))
+    assert "Quantum-Safe Bitcoin" in text
+    assert "черновик" not in text.lower() or "робот не отправляет работу сам" in text
+
+
+def test_draft_does_not_repeat_itself_on_the_next_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent import autopilot, config, inbox
+    from agent.channels import taskmarket as tm
+    from agent.ledger import Opportunity, upsert_opportunities
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "auto.db"))
+    monkeypatch.setattr(autopilot, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(config, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(tm, "project_root", lambda: tmp_path)
+    (tmp_path / "reports").mkdir()
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xabc", channel="taskmarket", title="Quantum-Safe Bitcoin",
+        reward_usd=199.0, payload={"submissions": 2, "ev_per_hour": 17.0},
+    )])
+    monkeypatch.setattr(autopilot, "next_actions",
+                        lambda limit=5, min_ev_per_hour=None: [{"id": "taskmarket:0xabc"}])
+
+    autopilot.prepare()
+    prepared, skipped = autopilot.prepare()
+    assert prepared == []
+    assert any("уже в очереди" in note for note in skipped), skipped
+    assert len(inbox.pending()) == 1

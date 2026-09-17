@@ -19,13 +19,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from html import unescape
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.channels.base import Channel
-from agent.config import get_float
+from agent.config import get_float, project_root
 from agent.http import build_session
 from agent.ledger import Opportunity
 from agent.scoring import looks_like_junk, score_opportunity
@@ -163,6 +165,87 @@ def read_snapshot(root=None) -> Any:
 
     return snapshots.read(SNAPSHOT_REL, fresh_hours=SNAPSHOT_FRESH_HOURS,
                           keys=("tasks", "items", "quests"), root=root)
+
+
+#: Сколько слов считать нижней границей полезного ответа на площадке.
+DRAFT_MIN_WORDS = 200
+
+
+def draft_markdown(opportunity: Dict[str, Any]) -> str:
+    """Черновик работы для задачи площадки: что сделать и как это отправить.
+
+    Площадка платит за результат и доказательство, а не за заявку, поэтому
+    черновик — это каркас ответа: критерии приёмки читаются на странице задачи,
+    робот напоминает, что именно проверить, и не выдумывает то, чего не знает.
+    """
+    payload = opportunity.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload or "{}")
+        except Exception:
+            payload = {}
+    reward = float(opportunity.get("reward_usd") or payload.get("reward_usd") or 0.0)
+    submissions = int(payload.get("submissions") or 0)
+    hours_left = payload.get("hours_left")
+    identifier = str(opportunity.get("id") or "")
+    url = str(opportunity.get("url") or payload.get("url") or "")
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    lines = [
+        f"# Черновик работы: {opportunity.get('title', 'задача')}",
+        "",
+        f"- ID: `{identifier}`",
+        f"- Награда: ${reward:,.2f} USDC (кошелёк на Base — ваш)",
+        f"- Работ уже прислано: {submissions}"
+        + (" — конкурентов нет, можно успеть первым" if submissions == 0 else ""),
+        "- Срок: " + (f"осталось {float(hours_left):.0f} ч" if hours_left is not None
+                       else "смотрите на странице задачи"),
+        f"- Страница задачи: {url}",
+        f"- Подготовлено: {generated}",
+        "",
+        "## Прочитать перед работой (этого робот знать не может)",
+        "",
+        "- Критерии приёмки: что именно считается результатом и в каком виде его ждут",
+        "- Формат сдачи: текст, файл, ссылка, код — площадка пишет это сама",
+        "- Срок: после него работу не примут, даже если она готова",
+        "- Кошелёк на Base привязан — иначе выплата не уйдёт",
+        "",
+        "## Структура ответа",
+        "",
+        "1. **Результат** — по делу, без предисловий: что сделано и что получилось.",
+        "2. **Как проверял** — конкретные шаги, чтобы проверяющий мог повторить.",
+        "3. **Доказательство** — ссылка или файл, которые подтверждают слова.",
+        "4. **Ограничения** — где решение не работает и что осталось за рамками.",
+        "",
+        f"Объём: от {DRAFT_MIN_WORDS} слов, если площадка не сказала иначе;",
+        "для кода и данных объём заменяет рабочее доказательство.",
+        "",
+        "## Отправка (вручную)",
+        "",
+        "1. Вставить текст в форму отправки на странице задачи.",
+        "2. Приложить ссылку-подтверждение, если площадка её ждёт.",
+        "3. Отправить от своего имени — робот не отправляет работу сам.",
+        "",
+        "## После отправки",
+        "",
+        f"1. Записать время: `python -m agent.main часы --channel taskmarket "
+        f"--hours <часы> --id {identifier}`",
+        "2. Зафиксировать ожидаемую выплату: `python -m agent.main выплата-запись "
+        f"--channel taskmarket --amount {reward:.2f}`",
+        "3. После прихода USDC: `python -m agent.main выплата-подтвердить <id>` — "
+        "только это считается доходом.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def save_draft(opportunity: Dict[str, Any]) -> Path:
+    """Записать черновик в reports/inbox и вернуть путь."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(opportunity.get("id") or "task")).strip("-")
+    target = project_root() / "reports" / "inbox" / f"taskmarket-{safe}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(draft_markdown(opportunity), encoding="utf-8")
+    return target
 
 
 class TaskMarketChannel(Channel):
