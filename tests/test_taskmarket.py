@@ -455,3 +455,97 @@ def test_draft_does_not_repeat_itself_on_the_next_pass(
     assert prepared == []
     assert any("уже в очереди" in note for note in skipped), skipped
     assert len(inbox.pending()) == 1
+
+
+def test_draft_names_the_wallet_that_signs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Доказательство на площадке подписывается тем же кошельком, что в отчёте."""
+    from agent.channels.taskmarket import draft_markdown
+
+    monkeypatch.setenv("TASKMARKET_WALLET", "0x6E16fF195d8bbA5628F169BdFb3644655Ba2a8A8")
+    monkeypatch.delenv("PAYOUT_WALLET", raising=False)
+    text = draft_markdown({"id": "taskmarket:0xabc", "title": "Задача", "reward_usd": 5.0,
+                           "payload": {}})
+    assert "0x6E16fF195d8bbA5628F169BdFb3644655Ba2a8A8" in text
+    assert "подписывается им же" in text
+
+
+def test_draft_falls_back_to_the_common_wallet(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.channels.taskmarket import draft_markdown
+
+    monkeypatch.delenv("TASKMARKET_WALLET", raising=False)
+    monkeypatch.setenv("PAYOUT_WALLET", "0x42C7377430A1E888de244fe167059dFD44988a3c")
+    text = draft_markdown({"id": "taskmarket:0xabc", "title": "Задача", "reward_usd": 5.0,
+                           "payload": {}})
+    assert "0x42C7377430A1E888de244fe167059dFD44988a3c" in text
+
+
+def test_draft_says_how_to_set_a_wallet_when_there_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.channels.taskmarket import draft_markdown
+
+    monkeypatch.delenv("TASKMARKET_WALLET", raising=False)
+    monkeypatch.delenv("PAYOUT_WALLET", raising=False)
+    text = draft_markdown({"id": "taskmarket:0xabc", "title": "Задача", "reward_usd": 5.0,
+                           "payload": {}})
+    assert "кошелёк <адрес> --save" in text
+
+
+# --- осознанные отказы ---------------------------------------------------------
+
+def test_veto_keeps_a_high_ev_task_out_of_recommendations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Высокий EV/час не помогает, если работу нельзя сделать без своего GPU."""
+    import yaml
+
+    from agent import farm
+    from agent.ledger import Opportunity, upsert_opportunities
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "v.db"))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "veto.yaml").write_text(yaml.safe_dump([{
+        "id": "taskmarket:0xgpu",
+        "reason": "нужен NVIDIA GPU",
+        "decided": "2026-09-17",
+    }], allow_unicode=True), encoding="utf-8")
+    monkeypatch.setattr("agent.veto.project_root", lambda: tmp_path)
+
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xgpu", channel="taskmarket", title="Конкурс CUDA-ядер",
+        reward_usd=199.0, payload={"ev_per_hour": 17.0, "triaged": True},
+    )])
+    assert farm.next_actions(limit=5, min_ev_per_hour=3.0) == []
+
+    refused = farm.refused_actions()
+    assert refused and refused[0]["reason"] == "нужен NVIDIA GPU"
+
+
+def test_veto_file_survives_a_broken_yaml(monkeypatch: pytest.MonkeyPatch,
+                                          tmp_path: Path) -> None:
+    from agent import veto
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "veto.yaml").write_text("{{{ не yaml", encoding="utf-8")
+    monkeypatch.setattr("agent.veto.project_root", lambda: tmp_path)
+    assert veto.entries() == [], "битый файл не должен ронять цикл"
+
+
+def test_dropped_task_can_be_returned_by_removing_the_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Отказ — решение, а не приговор: убрали строку — задача снова в очереди."""
+    from agent import farm, veto
+    from agent.ledger import Opportunity, set_status, upsert_opportunities
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "v2.db"))
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr("agent.veto.project_root", lambda: tmp_path)
+
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xgpu", channel="taskmarket", title="Конкурс CUDA-ядер",
+        reward_usd=199.0, payload={"ev_per_hour": 17.0, "triaged": True},
+    )])
+    assert farm.next_actions(limit=5, min_ev_per_hour=3.0)[0]["id"] == "taskmarket:0xgpu"
+
+    set_status("taskmarket:0xgpu", "dropped", note="нужен NVIDIA GPU")
+    assert farm.next_actions(limit=5, min_ev_per_hour=3.0) == []
+    assert veto.reason("taskmarket:0xgpu") == ""

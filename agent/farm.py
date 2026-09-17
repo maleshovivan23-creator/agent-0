@@ -482,8 +482,10 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
     "низкая ценность" list in ``low_value``.
     """
     from agent.ledger import age_hours, connect
+    from agent.veto import reasons as veto_reasons
 
     floor = min_ev_per_hour if min_ev_per_hour is not None else get_float("MIN_EV_PER_HOUR", 3.0)
+    refused = veto_reasons()
 
     conn = connect()
     try:
@@ -494,6 +496,10 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
         ).fetchall()
     finally:
         conn.close()
+
+    # Осознанный отказ сильнее любой оценки: высокий EV/час не помогает, если
+    # работу нельзя сделать (нет GPU, нет ключа, нужен официальный прогон).
+    rows = [row for row in rows if row["id"] not in refused]
 
     actions: List[Dict[str, Any]] = []
     for row in rows:
@@ -544,6 +550,17 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
             }
         )
     return actions
+
+
+def refused_actions(limit: int = 10) -> List[Dict[str, str]]:
+    """Задачи, от которых ферма отказалась осознанно, вместе с причиной.
+
+    Показываются человеку, а не прячутся: отказ — это решение, и он должен быть
+    виден рядом с рекомендациями, иначе выглядит как «робот не нашёл задачу».
+    """
+    from agent.veto import entries
+
+    return entries()[:limit]
 
 
 def low_value(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[Dict[str, Any]]:

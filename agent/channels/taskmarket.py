@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.channels.base import Channel
-from agent.config import get_float, project_root
+from agent.config import get_env, get_float, project_root
 from agent.http import build_session
 from agent.ledger import Opportunity
 from agent.scoring import looks_like_junk, score_opportunity
@@ -190,17 +190,20 @@ def draft_markdown(opportunity: Dict[str, Any]) -> str:
     identifier = str(opportunity.get("id") or "")
     url = str(opportunity.get("url") or payload.get("url") or "")
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    wallet = (get_env("TASKMARKET_WALLET", "") or get_env("PAYOUT_WALLET", "") or "").strip()
 
     lines = [
         f"# Черновик работы: {opportunity.get('title', 'задача')}",
         "",
         f"- ID: `{identifier}`",
-        f"- Награда: ${reward:,.2f} USDC (кошелёк на Base — ваш)",
+        f"- Награда: ${reward:,.2f} USDC на Base",
         f"- Работ уже прислано: {submissions}"
         + (" — конкурентов нет, можно успеть первым" if submissions == 0 else ""),
         "- Срок: " + (f"осталось {float(hours_left):.0f} ч" if hours_left is not None
                        else "смотрите на странице задачи"),
         f"- Страница задачи: {url}",
+        f"- Кошелёк для выплаты: {wallet or 'не задан — `python -m agent.main кошелёк <адрес> --save`'}"
+        + (" — отправка подписывается им же" if wallet else ""),
         f"- Подготовлено: {generated}",
         "",
         "## Прочитать перед работой (этого робот знать не может)",

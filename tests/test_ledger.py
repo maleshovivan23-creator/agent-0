@@ -116,3 +116,28 @@ def test_tests_never_touch_the_live_database() -> None:
     live = Path(__file__).resolve().parent.parent / "data" / "agent.db"
     assert ledger.db_path() != live
     assert live not in ledger.db_path().parents
+
+
+def test_dropped_keeps_the_reason(tmp_path, monkeypatch) -> None:
+    """Отсев без причины через месяц неотличим от забытой задачи."""
+    from agent.ledger import (Opportunity, connect, get_opportunity, set_status,
+                              upsert_opportunities)
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "l.db"))
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xabc", channel="taskmarket", title="GPU-конкурс",
+        reward_usd=199.0, rationale="EV/час 17.0",
+    )])
+    assert set_status("taskmarket:0xabc", "dropped", note="нужен NVIDIA GPU") is True
+
+    row = get_opportunity("taskmarket:0xabc")
+    assert row["status"] == "dropped"
+    assert "EV/час 17.0" in row["rationale"]          # прежнее обоснование цело
+    assert "нужен NVIDIA GPU" in row["rationale"]     # и причина рядом
+    conn = connect()
+    try:
+        queued = conn.execute(
+            "SELECT COUNT(*) FROM opportunities WHERE status='queued'").fetchone()[0]
+    finally:
+        conn.close()
+    assert queued == 0, "отсеянная задача не должна снова попадать в рекомендации"

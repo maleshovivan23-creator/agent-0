@@ -382,13 +382,26 @@ def verify_payout(payout_id: int) -> bool:
     return row is not None
 
 
-def set_status(opportunity_id: str, status: str) -> bool:
-    """Move an opportunity through the funnel: queued -> working -> submitted -> paid/dropped."""
+def set_status(opportunity_id: str, status: str, note: str = "") -> bool:
+    """Move an opportunity through the funnel: queued -> working -> submitted -> paid/dropped.
+
+    ``note`` — почему решение принято: «dropped» без причины через месяц
+    неотличим от забытой задачи, а именно отсев чаще всего и надо объяснить.
+    Причина дописывается к обоснованию, а не заменяет его.
+    """
     conn = connect()
     try:
-        cur = conn.execute(
-            "UPDATE opportunities SET status=? WHERE id=?", (status, opportunity_id)
-        )
+        if note:
+            cur = conn.execute(
+                "UPDATE opportunities SET status=?, "
+                "rationale = CASE WHEN rationale IS NULL OR rationale='' THEN ? "
+                "ELSE rationale || ' | ' || ? END WHERE id=?",
+                (status, note, note, opportunity_id),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE opportunities SET status=? WHERE id=?", (status, opportunity_id)
+            )
         conn.commit()
         return cur.rowcount > 0
     finally:

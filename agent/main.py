@@ -183,7 +183,21 @@ def cmd_next(args: argparse.Namespace) -> int:
                 tail = " → ".join(rest)
                 print(f"   {DIM}дальше: {tail[:230]}{'…' if len(tail) > 230 else ''}{RESET}")
         print()
+    _print_refused()
     return 0
+
+
+def _print_refused() -> None:
+    """Отказы видны рядом с рекомендациями: иначе «не берём» выглядит как «не нашли»."""
+    from agent.farm import refused_actions
+
+    refused = refused_actions(limit=3)
+    if not refused:
+        return
+    print(f"{DIM}Осознанно не берём ({len(refused)}):{RESET}")
+    for entry in refused:
+        print(f"  {DIM}{entry['id'][:56]} — {entry['reason'][:120]}{RESET}")
+    print(f"{DIM}Полный список и причины: data/veto.yaml{RESET}")
 
 
 # ---------------------------------------------------------------------- cycle
@@ -402,10 +416,12 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 
 def cmd_status_set(args: argparse.Namespace) -> int:
-    if set_status(args.opportunity_id, args.status):
+    if set_status(args.opportunity_id, args.status, note=args.note or ""):
         if args.status in ("proposed", "working", "done"):
             inbox_mod.mark_published(args.opportunity_id)
         print(paint(f"Статус {args.opportunity_id} -> {args.status}", GREEN))
+        if args.note:
+            print(f"  причина: {args.note}")
         return 0
     print(f"Возможность {args.opportunity_id} не найдена.")
     return 1
@@ -1682,6 +1698,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_set = sub.add_parser("status-set", help="перевести задачу в другой статус")
     status_set.add_argument("opportunity_id")
     status_set.add_argument("status", choices=["queued", "proposed", "working", "submitted", "paid", "dropped"])
+    status_set.add_argument("--note", default="", help="почему такое решение (пишется в обоснование)")
 
     hours = sub.add_parser("hours-add", help="записать затраченное время")
     hours.add_argument("--channel", required=True)
