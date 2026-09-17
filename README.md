@@ -1,41 +1,127 @@
-# AGENT-0
+# AGENT-0 — ферма автономных воркеров
 
-AGENT-0 is a single-agent marketplace runner focused on one working agent, not a swarm. The project is intentionally fail-closed: default mode is dry-run, live mode is explicit, and unknown API schemas are blocked until verified.
+Проект про заработок без начальных вложений. Он честно разделяет два вопроса:
 
-## Current status
+1. **Что вообще может приносить деньги без вложений** — и большинство популярных
+   ответов («краны», «сибил-ферма кошельков», «airdrop-ферма», «bug bounty на
+   полном автомате») не проходят проверку: либо платят $0.001–0.008 в час, либо
+   запрещены правилами площадок, либо требуют начальных вложений на газ.
+2. **Что можно автоматизировать, не выходя за рамки правил** — поиск и приоритизацию
+   оплачиваемой работы, черновики результатов, пассивную разведку в разрешённом
+   scope, бухгалтерию дохода с доказательствами.
 
-The repository contains the initial Python agent scaffold with dry-run adapters for OpenTask, MoltMarket, and AgentWorld. Live integrations remain disabled until their current official authentication and API schemas are verified.
+Ферма делает второе и **осознанно отказывается** от первого. Каждый отказ
+описан в коде и в дашборде: причина «почему это не работает», риск и то, чем
+это заменить.
 
-## Safety defaults
+## Работает здесь и сейчас (без вложений, без кошелька)
 
-- dry-run is the default;
-- no private key or seed phrase is required or accepted;
-- live submissions require explicit `RUN_MODE=live` and `ALLOW_LIVE_SUBMISSIONS=true`;
-- undocumented endpoints are not guessed;
-- duplicate bids are prevented through SQLite logging;
-- the agent uses one identity and does not attempt to bypass anti-abuse controls.
+| Воркер | Что делает | Статус |
+|---|---|---|
+| `github_bounties` | Находит открытые bounty-задачи через официальный API GitHub, разбирает сумму награды, оценивает трудозатраты и конкуренцию, считает EV/час, отсеивает приманки | **работает** |
+| `bug_recon` | Пассивная разведка (DNS, TLS, HTTP-заголовки, security.txt) строго по хостам из `data/scope.yaml` | работает **только** при заполненном файле авторизации |
 
-## Quick start
+Каналы, которых нет и не будет, потому что они нарушают правила площадок,
+закон или арифметику — с обоснованием каждого в `agent/policy.py`:
+
+- автоматический сбор крипто-кранов;
+- обход капчи и анти-бот защит;
+- сибил-ферма кошельков и мультиаккаунты (пример: Optimism отсеял ~17 000
+  адресов, сгорело около $18.6 млн наград — работа сделана, выплаты нет);
+- автоматическая airdrop-ферма (нужны вложения на газ — ломается само условие
+  «без вложений»);
+- сканирование и эксплуатация чужих систем без разрешения (в РФ — ст. 272 УК);
+- автоматизация площадок, где она прямо запрещена правилами.
+
+## Быстрый старт
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
 cp .env.example .env
-python -m agent.main
+
+python -m agent.main status        # состояние фермы и отказы политики
+python -m agent.main cycle         # один реальный проход по воркерам
+python -m agent.main queue         # очередь лучших возможностей с EV/час
+python -m agent.main policy        # что разрешено, что запрещено и почему
+python -m agent.main serve         # дашборд, порт 8000
 pytest -q
 ```
 
-The default command does not call real marketplaces or move funds.
+## Как это приносит деньги
 
-## Live mode
+Ферма не платит вам деньги — она сокращает время между «искать оплачиваемую
+задачу» и «отдать готовую работу». Деньги приходят от заказчика:
 
-Before enabling live mode, confirm the current official API endpoints and auth flows for each marketplace. Configure only documented paths and start with a small bid limit.
+1. `cycle` находит открытые задачи с наградой (метки `💎 Bounty`, `$700`,
+   `bounty` и т.п.) и считает ожидаемую ценность на час.
+2. Вы берёте верхнюю строку из `queue`, открываете задачу.
+3. `python -m agent.main draft <id>` готовит план работ по задаче (через
+   локальную модель, если она поднята; иначе — чек-лист проверки).
+4. Вы делаете работу и **сами** публикуете pull request. Автоматическая
+   публикация от вашего имени — это `submit_deliverable_human_approved`:
+   возможность разрешена, но требует человека в контуре.
+5. Когда выплата пришла, вы фиксируете её с доказательством:
 
-```env
-RUN_MODE=live
-ALLOW_LIVE_SUBMISSIONS=true
-MAX_BIDS_PER_CYCLE=1
+```bash
+python -m agent.main payout-add --channel github_bounties --amount 150 \
+    --evidence "PR #123 merged, tx/инвойс"
+
+python -m agent.main payout-verify 1   # отдельный шаг: заявка -> доход
 ```
 
-Never put a seed phrase or private key in `.env`, GitHub, or chat.
+Заявленная сумма и подтверждённый доход считаются **раздельно**. Агент не может
+сам перевести своё «я заработал» в «доход»: подтверждение — это действие
+человека. Иначе в базе быстро появятся красивые цифры без денег.
+
+## Честные ожидания
+
+- Первые деньги с bounty приходят не за день: типичный цикл — найти задачу,
+  разобраться в репозитории, сделать PR, дождаться ревью. Многие PR не мержат.
+- Скоринг в `agent/scoring.py` умышленно пессимистичен: вероятность успеха для
+  обычной задачи — 12–30%, а не 80%. Лучше увидеть низкую оценку и не тратить
+  день, чем поверить в лёгкие деньги.
+- «Пассивного» дохода без вложений не существует. Существует доход за работу,
+  в которой автоматизирована разведка и рутина.
+
+## Про bug bounty
+
+Полностью автономный bug bounty-агент — это либо выход за scope, либо
+автоматизация того, что и так безопасно. Поэтому:
+
+- **автоматизировано:** инвентаризация, DNS/TLS/HTTP-отпечатки, сбор контекста,
+  черновик отчёта;
+- **оставлено человеку:** проверка гипотез, эксплуатация, подача отчёта;
+- **жёсткое ограничение:** без `data/scope.yaml` с указанием программы и хостов
+  воркер не запускается вообще. Хост не из файла — отказ и запись в журнал
+  отказов.
+
+Скопируйте `data/scope.example.yaml` в `data/scope.yaml` и заполните только тем,
+на что у вас есть разрешение. Участвовать можно в публичных программах
+(HackerOne, Bugcrowd, YesWeHack, standoff-платформы) — там правила и scope
+опубликованы, и работа не требует вложений.
+
+## Архитектура
+
+```
+agent/
+  policy.py     — реестр разрешённых и запрещённых возможностей (fail-closed)
+  scoring.py    — разбор награды, оценка трудозатрат, EV/час, отсев приманок
+  ledger.py     — SQLite: возможности, проходы, выплаты (заявка ≠ доход)
+  farm.py       — оркестратор: кого запускать, кого блокировать
+  channels/     — воркеры, каждый объявляет одну capability
+  dashboard.py  — веб-панель без внешних зависимостей
+  main.py       — CLI
+```
+
+Ключевое правило: воркер объявляет одну capability, `farm.py` спрашивает
+`policy.py` до любого сетевого вызова, а всё, что не описано в реестре,
+считается запрещённым.
+
+## Безопасность
+
+- приватные ключи и seed-фразы не нужны и не принимаются: ферма не двигает
+  средства и не имеет доступа к кошельку;
+- `GITHUB_TOKEN` нужен только read-only для публичного поиска;
+- воркер разведки по умолчанию пассивный, с паузой между запросами;
+- никакой эксплуатации уязвимостей в коде нет.

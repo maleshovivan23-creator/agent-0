@@ -6,16 +6,21 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-def _project_root() -> Path:
+def project_root() -> Path:
+    """Repository root, regardless of the current working directory."""
     return Path(__file__).resolve().parent.parent
 
 
+def _project_root() -> Path:  # kept for backwards compatibility
+    return project_root()
+
+
 def load_environment() -> None:
-    env_path = _project_root() / ".env"
+    env_path = project_root() / ".env"
     if env_path.exists():
         load_dotenv(env_path)
     else:
-        load_dotenv(_project_root() / ".env.example")
+        load_dotenv(project_root() / ".env.example")
 
 
 def get_env(name: str, default: str | None = None) -> str | None:
