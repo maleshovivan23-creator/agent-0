@@ -77,6 +77,22 @@ jobs:
           esac
           python -m agent.main снапшот taskmarket --limit 20 --detail 2 || true
           python - <<'PY' || true
+          import re
+          from agent.http import build_session
+          from agent import task_detail
+          page = build_session("AGENT-0-diagnostics/1.0").get(
+              task_detail.task_url("0x5f596b1a81417834a4366655bd4e6194819f5404a62c919c6953ae9bc92860bc"),
+              timeout=25).text
+          print(f"::notice::диагностика: страница задачи {len(page)} байт")
+          seen = {}
+          for m in re.finditer(r'\\?"([A-Za-z_][A-Za-z0-9_]{2,30})\\?"\s*:\s*\\?"((?:[^"\\\\]|\\\\.){120,})\\?"', page):
+              key, value = m.group(1), m.group(2)
+              if len(value) > seen.get(key, 0):
+                  seen[key] = len(value)
+          for key, size in sorted(seen.items(), key=lambda kv: -kv[1])[:12]:
+              print(f"::notice::ключ {key}: {size} символов")
+          PY
+          python - <<'PY' || true
           import json, pathlib
           path = pathlib.Path("snapshots/taskmarket-report.json")
           if path.exists():
