@@ -23,12 +23,14 @@ HUMAN_ACTIONS: Dict[str, str] = {
     "application": "Опубликовать заявку в задаче от своего имени",
     "quest": "Отправить текст квеста на площадке от своего имени",
     "brief": "Прочитать план, открыть scope и начать работу",
+    "dossier": "Открыть досье: файлы-кандидаты и команды запуска уже собраны",
 }
 
 KIND_TITLES: Dict[str, str] = {
     "application": "Заявка",
     "quest": "Черновик квеста",
     "brief": "План работ",
+    "dossier": "Досье",
 }
 
 STATUSES = ("ready", "published", "skipped")

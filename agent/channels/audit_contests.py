@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.channels.base import Channel
 from agent.config import get_env
+from agent.contest_page import parse as parse_contest_page
 from agent.http import build_session
 from agent.ledger import Opportunity
 
@@ -97,12 +98,14 @@ class AuditContestsChannel(Channel):
         "дохода из каналов фермы — и самый высокий порог входа (нужен Solidity/Rust)."
     )
 
-    def __init__(self, max_age_days: Optional[int] = None, scope_budget: int = 4) -> None:
+    def __init__(self, max_age_days: Optional[int] = None, scope_budget: int = 4,
+                 page_budget: int = 4) -> None:
         super().__init__()
         self.max_age_days = max_age_days if max_age_days is not None else int(
             get_env("CONTEST_MAX_AGE_DAYS", "75") or 75
         )
         self.scope_budget = scope_budget
+        self.page_budget = page_budget
         self.session = build_session(
             "AGENT-0-contest-scout/2.0",
             {"Accept": "application/vnd.github+json"},
@@ -156,6 +159,20 @@ class AuditContestsChannel(Channel):
             "scope_sample": files[:8],
             "scope_text_excerpt": text[:1200],
         }
+
+    def _read_page(self, repo: str) -> Dict[str, Any]:
+        """README контеста: пул, даты и репозиторий с кодом — из первых рук."""
+        data = self._get(f"{API}/repos/{repo}/contents/README.md")
+        if not isinstance(data, dict) or "content" not in data:
+            return {}
+        import base64
+
+        try:
+            text = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        except Exception:
+            return {}
+        page = parse_contest_page(text)
+        return page.as_dict() if page.found_anything else {}
 
     def _count_sources(self, repo: str) -> Dict[str, Any]:
         """Count source files in the repository tree when scope.txt is absent."""
@@ -247,17 +264,70 @@ class AuditContestsChannel(Channel):
                     scope = self._read_scope(full_name)
                     self.scope_budget -= 1
 
+                page: Dict[str, Any] = {}
+                if self.page_budget > 0:
+                    page = self._read_page(full_name)
+                    self.page_budget -= 1
+
+                # Контест с прошедшей датой — не возможность, а история. Раньше
+                # такие попадали в очередь как «$23/час», хотя приём работ закрыт.
+                hours_left = page.get("hours_left")
+                expired = hours_left is not None and hours_left < 0
+                if expired:
+                    opportunities.append(
+                        Opportunity(
+                            id=f"contest:{full_name}",
+                            channel=self.name,
+                            title=f"{meta['platform']}: {name} (закончился)",
+                            url=str(repo.get("html_url")),
+                            repo=full_name,
+                            reward_usd=0.0,
+                            reward_source="контест завершён",
+                            score=0.0,
+                            rationale=(
+                                f"{meta['platform']}: приём работ закрыт по датам из README"
+                                + (f" (конец {page.get('ends_at')})" if page.get("ends_at") else "")
+                            ),
+                            status="done",
+                            payload={**page, "expired": True, "platform": meta["platform"]},
+                        )
+                    )
+                    continue
+
                 estimate = self._estimate(scope)
                 pushed_age = _age_days(repo.get("pushed_at"))
                 open_hint = "recent" if pushed_age <= 30 else "stale"
+
+                probability = PROBABILITY_AT_LEAST_ONE
+                pool = page.get("prize_pool_usd")
+                if hours_left is not None and hours_left < estimate["hours"]:
+                    # Времени меньше, чем нужно на саму работу: шанс падает резко,
+                    # и это честнее показать, чем держать оценку на прежнем уровне.
+                    probability *= 0.25
+                if pool and pool < 20_000:
+                    probability *= 0.6
+                expected = probability * MEDIAN_FINDING_AWARD
+                ev_per_hour = (expected - estimate["hours"] * COST_PER_HOUR * 0.2) / estimate["hours"]
+                estimate = {
+                    **estimate,
+                    "probability": round(probability, 3),
+                    "expected_value_usd": round(expected, 2),
+                    "ev_per_hour": round(ev_per_hour, 2),
+                }
 
                 rationale = (
                     f"{meta['platform']}; создан {age} дн. назад; "
                     f"объём работ ~{estimate['hours']}ч; "
                     f"ориентир: медианная выплата за находку ${MEDIAN_FINDING_AWARD:,.0f}, "
-                    f"шанс хотя бы одной зачётной находки ~{PROBABILITY_AT_LEAST_ONE:.0%}; "
+                    f"шанс хотя бы одной зачётной находки ~{probability:.0%}; "
                     f"EV/час ~${estimate['ev_per_hour']:,.1f}"
                 )
+                if pool:
+                    rationale += f"; призовой пул ${pool:,.0f} (из README контеста)"
+                if hours_left is not None:
+                    rationale += f"; до конца приёма работ {hours_left:.0f}ч"
+                    if hours_left < estimate["hours"]:
+                        rationale += " — времени меньше, чем нужно на саму работу"
                 if scope.get("scope_solidity"):
                     rationale += f"; в scope {scope['scope_solidity']} Solidity-файлов"
                 elif scope.get("scope_rust"):
@@ -284,7 +354,7 @@ class AuditContestsChannel(Channel):
                             "open_hint": open_hint,
                             "language": repo.get("language"),
                             "effort_hours": estimate["hours"],
-                            "probability": PROBABILITY_AT_LEAST_ONE,
+                            "probability": estimate["probability"],
                             "ev_per_hour": estimate["ev_per_hour"],
                             "expected_value_usd": estimate["expected_value_usd"],
                             "assumptions": [
@@ -300,6 +370,7 @@ class AuditContestsChannel(Channel):
                                 "Есть ли у вас нужный стек (Solidity/Rust/Cairo)",
                             ],
                             **scope,
+                            **page,
                         },
                     )
                 )

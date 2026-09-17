@@ -24,7 +24,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent import inbox, learning, proposals, quests, watchdog
+from agent import dossier as dossier_mod
+from agent import followup, inbox, learning, proposals, quests, watchdog
 from agent.config import get_env, get_float, project_root
 from agent.farm import next_actions, run_cycle
 from agent.ledger import get_opportunity, get_state, set_state, summary
@@ -83,6 +84,7 @@ class TickResult:
     triaged: int = 0
     prepared: List[Dict[str, Any]] = field(default_factory=list)
     problems: List[Dict[str, Any]] = field(default_factory=list)
+    followup: List[str] = field(default_factory=list)
     skipped: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     next_interval: float = DEFAULT_MIN_INTERVAL
@@ -100,6 +102,7 @@ class TickResult:
             "triaged": self.triaged,
             "prepared": self.prepared,
             "problems": self.problems,
+            "followup": self.followup,
             "skipped": self.skipped,
             "notes": self.notes,
             "next_interval": round(self.next_interval),
@@ -122,15 +125,52 @@ def _write_artifact(name: str, text: str) -> str:
     return str(file_path.relative_to(project_root()))
 
 
+DEAD_STATUSES = ("done", "dropped", "closed", "paid")
+
+
+def sweep_inbox() -> List[str]:
+    """Убрать из очереди то, что уже не работа.
+
+    Задача могла закрыться, пока текст ждал отправки: контест закончился,
+    кто-то другой получил выплату, заказчик закрыл issue. Держать такой текст
+    в очереди — значит заставлять человека тратить время на мёртвое задание.
+    """
+    removed: List[str] = []
+    for item in inbox.pending(limit=100):
+        opportunity = get_opportunity(str(item.get("opportunity_id") or ""))
+        if not opportunity:
+            continue
+        payload = opportunity.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload or "{}")
+            except Exception:
+                payload = {}
+        payload = payload or {}
+        status = str(opportunity.get("status") or "")
+        reason = ""
+        if payload.get("expired"):
+            reason = "контест завершён"
+        elif status in DEAD_STATUSES:
+            reason = f"задача в статусе {status}"
+        elif payload.get("triage_verdict") in ("paid", "closed"):
+            reason = f"по триажу задача {payload['triage_verdict']}"
+        if reason:
+            if inbox.resolve(int(item["id"]), "skipped"):
+                removed.append(f"#{item['id']} «{str(item.get('title'))[:50]}» — {reason}")
+    return removed
+
+
 def prepare(limit: Optional[int] = None) -> tuple[List[Dict[str, Any]], List[str]]:
     """Turn the best open tasks into artifacts a human can finish in one click.
 
     Nothing is created for tasks that are already taken or whose payout cannot
-    reach the operator — that would be manufactured busywork.
+    reach the operator — that would be manufactured busywork. Сначала чистится
+    очередь: мёртвые задания не должны занимать внимание человека.
     """
     cap = limit if limit is not None else int(get_float("AUTOPILOT_PREPARE", 3))
     prepared: List[Dict[str, Any]] = []
-    skipped: List[str] = []
+    skipped: List[str] = list(sweep_inbox())
 
     for action in next_actions(limit=max(cap * 3, 6)):
         if len(prepared) >= cap:
@@ -161,6 +201,15 @@ def _prepare_one(opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         except Exception:
             payload = {}
     payload = payload or {}
+
+    if payload.get("expired"):
+        # Контест закрыт: подготовленный ранее план больше не работа, а история.
+        for item in inbox.pending(limit=50):
+            if item.get("opportunity_id") == str(opportunity["id"]):
+                inbox.resolve(int(item["id"]), "skipped")
+                return {"skipped": True,
+                        "reason": "контест завершён — план снят с очереди"}
+        return {"skipped": True, "reason": "контест завершён"}
 
     kind_hint = {"agent_marketplaces": "quest", "github_bounties": "application",
                  "audit_contests": "brief"}.get(channel)
@@ -200,6 +249,28 @@ def _prepare_one(opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "сделать работу быстро.\n\n" + text
             )
         path = _write_artifact(f"application-{opportunity['id']}", text)
+
+        # Досье: где править и что запускать. Готовится бесплатно (пара запросов
+        # к публичному API) и экономит первый час работы над каждой задачей.
+        dossier_note = ""
+        try:
+            page, dossier_path = dossier_mod.save(opportunity)
+            dossier_note = (
+                f" · досье: {len(page.candidates)} файлов-кандидатов, "
+                f"команд запуска {len(page.commands)}"
+            )
+            inbox.add(
+                opportunity_id=str(opportunity["id"]),
+                channel=channel,
+                kind="dossier",
+                title=f"Досье: {opportunity['title']}",
+                path=str(dossier_path.relative_to(project_root())),
+                summary=f"{page.repo} · файлов в дереве {page.total_files}",
+                action="Открыть досье: файлы-кандидаты и команды запуска тестов уже собраны",
+            )
+        except Exception as exc:
+            dossier_note = f" · досье не собрано ({exc.__class__.__name__})"
+
         item_id = inbox.add(
             opportunity_id=str(opportunity["id"]),
             channel=channel,
@@ -208,7 +279,7 @@ def _prepare_one(opportunity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             path=path,
             summary=(
                 f"${float(opportunity.get('reward_usd') or 0):,.0f} · "
-                f"{result.get('rail')} · триаж {result.get('triage')}"
+                f"{result.get('rail')} · триаж {result.get('triage')}{dossier_note}"
             ),
         )
         return {
@@ -297,17 +368,26 @@ def tick(prepare_limit: Optional[int] = None) -> TickResult:
     set_state("autopilot.last_result", result.as_dict())
     set_state("autopilot.inbox_ready", inbox.counts()["ready"])
 
+    followup_lines: List[str] = []
+    try:
+        followup_lines = followup.summary_lines(limit=10)
+    except Exception as exc:
+        result.notes.append(f"слежение недоступно: {exc.__class__.__name__}")
+
     problems = watchdog.inspect()
     result.problems = [problem.as_dict() for problem in problems]
+    result.followup = followup_lines
     set_state("watchdog.last_state", watchdog.state())
 
-    should_notify = bool(prepared) or bool(result.kept) or bool(problems)
+    should_notify = (bool(prepared) or bool(result.kept) or bool(problems)
+                     or bool(followup_lines))
     if should_notify and _nudge_allowed(problems):
         lines = [f"AGENT-0: проход завершён — найдено {result.found}, "
                  f"новых {result.new}, EV ${result.pipeline_ev_usd:,.0f}"]
         for item in prepared:
             lines.append(f"готово к публикации: {item['title'][:70]} → python -m agent.main входящие")
         lines.extend(watchdog.nudge_lines())
+        lines.extend(followup_lines)
         notify(lines)
     return result
 
@@ -496,6 +576,11 @@ def shift_report(hours: float = 24.0) -> str:
     for problem in problems:
         mark = "!!" if problem.severity == "critical" else "!"
         lines.append(f"- **{mark} {problem.title}** — {problem.detail}\n  → {problem.advice}")
+
+    watched = followup.summary_lines(limit=10)
+    if watched:
+        lines += ["", "## Задачи в работе: что изменилось", ""]
+        lines.extend(f"- {line}" for line in watched)
 
     learned = learning.summary_lines()
     if learned:

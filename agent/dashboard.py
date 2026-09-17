@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse
 from agent import autopilot as autopilot_mod
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
+from agent import followup as followup_mod
 from agent import learning as learning_mod
 from agent import watchdog as watchdog_mod
 from agent import payouts as payout_rails
@@ -168,6 +169,7 @@ def collect_state() -> Dict[str, Any]:
         "autopilot": autopilot_mod.status(),
         "watchdog": watchdog_mod.state(),
         "learning": learning_mod.learned_state(),
+        "followup": followup_mod.state(),
         "inbox": inbox_mod.pending(limit=10),
         "inbox_counts": inbox_mod.counts(),
         "queue": queue,
@@ -282,6 +284,11 @@ PAGE = r"""<!doctype html>
     <h2>Автопилот и очередь к публикации</h2>
     <div id="autopilot"></div>
     <div id="inbox" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Взятые задачи: не отдали ли их, пока вы работаете</h2>
+    <div id="followup"></div>
   </div>
 
   <div class="card wide" style="margin-bottom:14px">
@@ -472,6 +479,29 @@ async function resolveItem(id, status) {
   refresh();
 }
 
+function renderFollowup(data) {
+  if (!data) { $("followup").innerHTML = ""; return; }
+  if (!data.watched) {
+    $("followup").innerHTML = '<div class="muted">Задач в работе нет. Слежение включается, ' +
+      'когда вы отмечаете задачу: python -m agent.main статус &lt;id&gt; working</div>';
+    return;
+  }
+  const styles = {ok: ["on", "в порядке"], rival: ["info", "появился соперник"],
+                  stale: ["info", "затишье"], closed: ["off", "закрыта"],
+                  lost: ["off", "выплата ушла"], unknown: ["info", "нет данных"]};
+  const rows = (data.items || []).map(w => {
+    const [cls, label] = styles[w.verdict] || ["info", w.verdict];
+    return `<div class="item ${w.verdict === "ok" ? "hot" : "cold"}">
+      <div class="t"><span class="pill ${cls}">${label}</span> <b>${esc(w.title)}</b></div>
+      <div class="m">${money(w.reward_usd)} · статус ${esc(w.status)} · заявок ${w.attempts} ·
+        открытых PR ${w.open_prs}</div>
+      ${w.reason ? `<div class="m">${esc(w.reason)}</div>` : ""}
+      ${w.action && w.verdict !== "ok" ? `<div class="m"><b>Что делать:</b> ${esc(w.action)}</div>` : ""}
+    </div>`;
+  }).join("");
+  $("followup").innerHTML = rows;
+}
+
 function renderWatchdog(data) {
   if (!data) { $("watchdog").innerHTML = ""; return; }
   const level = {ok: ["on", "всё в порядке"], warning: ["info", "есть замечания"],
@@ -584,6 +614,7 @@ async function refresh() {
 
   renderReadiness(s.readiness);
   renderAutopilot(s.autopilot, s.inbox_counts);
+  renderFollowup(s.followup);
   renderWatchdog(s.watchdog);
   renderLearning(s.learning);
   renderInbox(s.inbox, s.inbox_counts);

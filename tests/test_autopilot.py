@@ -86,7 +86,10 @@ def test_prepare_gates_on_the_payout_rail(monkeypatch: pytest.MonkeyPatch) -> No
     assert inbox.counts()["ready"] == 0
 
 
-def test_prepare_creates_one_actionable_item_per_task(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_creates_one_actionable_item_per_task(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    _fake_dossier(monkeypatch, workspace)
     upsert_opportunities([
         Opportunity(id="github:org/repo#7", channel="github_bounties", title="Fix the parser",
                     reward_usd=200.0, payload={"ev_per_hour": 30.0, "triage_verdict": "ready",
@@ -106,7 +109,22 @@ def test_prepare_creates_one_actionable_item_per_task(monkeypatch: pytest.Monkey
     assert item["action"].startswith("Опубликовать")
 
 
-def test_prepare_does_not_duplicate_work(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fake_dossier(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
+    """Досье в тестах не ходит в сеть: проверяем логику очереди, а не GitHub."""
+    from types import SimpleNamespace
+
+    def fake_save(opportunity: Dict[str, Any]) -> Any:
+        path = workspace / "reports" / "inbox" / "dossier-fake.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Досье", encoding="utf-8")
+        return SimpleNamespace(repo="acme/parser", candidates=[], commands=[],
+                               total_files=3), path
+
+    monkeypatch.setattr(autopilot.dossier_mod, "save", fake_save)
+
+
+def test_prepare_does_not_duplicate_work(monkeypatch: pytest.MonkeyPatch, workspace: Path) -> None:
+    _fake_dossier(monkeypatch, workspace)
     upsert_opportunities([
         Opportunity(id="github:org/repo#7", channel="github_bounties", title="Fix",
                     reward_usd=200.0, payload={"ev_per_hour": 30.0, "triage_verdict": "ready"})
@@ -119,8 +137,10 @@ def test_prepare_does_not_duplicate_work(monkeypatch: pytest.MonkeyPatch) -> Non
     autopilot.prepare()
     prepared, skipped = autopilot.prepare()
     assert prepared == []
-    assert any("уже в очереди" in note for note in skipped)
-    assert inbox.counts()["ready"] == 1
+    assert any("уже в очереди" in note for note in skipped), skipped
+    # заявка и досье к ней: повторный проход не должен добавлять новые элементы
+    kinds = sorted(item["kind"] for item in inbox.pending())
+    assert kinds == ["application", "dossier"]
 
 
 def test_status_and_health_track_the_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:

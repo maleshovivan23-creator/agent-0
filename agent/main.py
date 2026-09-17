@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent import autopilot as autopilot_mod
+from agent import dossier as dossier_mod, followup as followup_mod
 from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
@@ -789,6 +790,116 @@ def cmd_learning(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_contests(args: argparse.Namespace) -> int:
+    """Контесты с дедлайнами: показываем то, что ещё можно взять."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, url, reward_usd, score, status, payload FROM opportunities "
+            "WHERE channel='audit_contests' ORDER BY score DESC LIMIT 50"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    active: List[Dict[str, Any]] = []
+    expired: List[Dict[str, Any]] = []
+    for row in rows:
+        payload = json.loads(row["payload"] or "{}")
+        item = {
+            "id": row["id"],
+            "title": row["title"],
+            "url": row["url"],
+            "score": row["score"],
+            "status": row["status"],
+            "pool": payload.get("prize_pool_usd"),
+            "hours_left": payload.get("hours_left"),
+            "scope_entries": payload.get("scope_entries"),
+            "code_repos": payload.get("code_repos") or [],
+            "expired": bool(payload.get("expired")) or row["status"] == "done",
+            "ends_at": payload.get("ends_at"),
+        }
+        (expired if item["expired"] else active).append(item)
+
+    print(paint("Аудит-контесты:", BOLD),
+          f"активных {len(active)} · завершённых {len(expired)}")
+    print()
+    if not active:
+        print("  Активных контестов нет. Новые появляются раз в неделю —")
+        print("  автопилот проверит сам: python -m agent.main автопилот --status")
+    for item in sorted(active, key=lambda it: (it["hours_left"] is None, it["hours_left"] or 0)):
+        pool = f"${item['pool']:,.0f}" if item["pool"] else "пул не указан"
+        hours = f"{item['hours_left']:.0f}ч до конца" if item["hours_left"] is not None else "срок на площадке"
+        scope = f"{item['scope_entries']} файлов в scope" if item["scope_entries"] else "scope не прочитан"
+        print(f"  {paint(item['title'][:56], BOLD)}")
+        print(f"    {pool} · {hours} · {scope} · EV/час ~{money(item['score'])}")
+        if item["code_repos"]:
+            print(f"    {DIM}код: {', '.join(item['code_repos'])}{RESET}")
+        if item["url"]:
+            print(f"    {item['url']}")
+        print(f"    {DIM}досье: python -m agent.main досье {item['id']}{RESET}")
+        print()
+    if expired:
+        print(paint("Завершённые (в работу не берём):", DIM))
+        for item in expired[:5]:
+            end = f", конец {item['ends_at'][:10]}" if item["ends_at"] else ""
+            print(f"  {item['title'][:56]}{end}")
+    return 0
+
+
+def cmd_dossier(args: argparse.Namespace) -> int:
+    opportunity = get_opportunity(args.opportunity_id)
+    if not opportunity:
+        print(f"Возможность {args.opportunity_id} не найдена.")
+        return 1
+    payload = json.loads(opportunity["payload"] or "{}")
+    opportunity["payload"] = payload
+
+    print(paint("Собираю досье по задаче (публичный API GitHub)...", DIM))
+    card, path = dossier_mod.save(opportunity)
+    print()
+    print(card.to_markdown())
+    print(paint(f"Сохранено: {path.relative_to(project_root())}", DIM))
+    if not card.tree_available:
+        print(paint("Дерево файлов недоступно — проверьте токен: python -m agent.main проверка",
+                    YELLOW))
+    return 0
+
+
+def cmd_followup(args: argparse.Namespace) -> int:
+    if args.json:
+        print(json.dumps(followup_mod.state(), ensure_ascii=False, indent=2))
+        return 0
+
+    watches = followup_mod.check(limit=args.limit)
+    if not watches:
+        print("Задач в работе нет: слежение включится после первой отправленной заявки")
+        print(paint("Как взять задачу: python -m agent.main дальше → "
+                    "заявка <id> → статус <id> working", DIM))
+        return 0
+
+    marks = {
+        "ok": (GREEN, "в порядке"),
+        "rival": (YELLOW, "появился соперник"),
+        "stale": (YELLOW, "затишье"),
+        "closed": (RED, "задача закрыта"),
+        "lost": (RED, "выплата ушла другому"),
+        "unknown": (DIM, "не проверить"),
+    }
+    print(paint("Слежение за задачами в работе:", BOLD))
+    print()
+    for watch in watches:
+        colour, label = marks.get(watch.verdict, (DIM, watch.verdict))
+        print(f"  {paint(label, colour)} · {watch.title[:60]}")
+        print(f"    ${watch.reward_usd:,.0f} · статус {watch.status} · "
+              f"заявок {watch.attempts_now} · открытых PR {watch.open_prs_now}")
+        if watch.reason:
+            print(f"    {watch.reason}")
+        if watch.action and watch.verdict != "ok":
+            print(f"    {paint('что делать:', BOLD)} {watch.action}")
+        print()
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Заполнить .env: секреты вводятся скрыто и никогда не печатаются."""
     if args.show:
@@ -1000,6 +1111,9 @@ ALIASES: Dict[str, str] = {
     "правила": "policy",
     "кто-я": "whoami",
     "настройка": "setup",
+    "контесты": "contests",
+    "досье": "dossier",
+    "слежение": "followup",
     "дозор": "watchdog",
     "обучение": "learning",
     "автопилот": "autopilot",
@@ -1097,6 +1211,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    contests = sub.add_parser("contests", help="контесты: пул, дедлайн, объём работ")
+    contests.add_argument("--all", action="store_true")
+
+    dose = sub.add_parser("dossier", help="досье по задаче: где править и что запускать")
+    dose.add_argument("opportunity_id")
+
+    follow = sub.add_parser("followup", help="слежение за задачами в работе")
+    follow.add_argument("--limit", type=int, default=20)
+    follow.add_argument("--json", action="store_true")
+
     watch = sub.add_parser("watchdog", help="дозор: что сломалось, пока вас не было")
     watch.add_argument("--json", action="store_true")
 
@@ -1188,6 +1312,9 @@ HANDLERS = {
     "policy": cmd_policy,
     "whoami": cmd_whoami,
     "setup": cmd_setup,
+    "contests": cmd_contests,
+    "dossier": cmd_dossier,
+    "followup": cmd_followup,
     "watchdog": cmd_watchdog,
     "learning": cmd_learning,
     "autopilot": cmd_autopilot,
