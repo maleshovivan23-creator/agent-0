@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS opportunities (
     rationale TEXT,
     status TEXT DEFAULT 'queued',
     payload TEXT,
-    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
+    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    first_seen TEXT,
+    last_seen TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -118,7 +120,29 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path()))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Догоняем схему для баз, созданных прошлыми версиями.
+
+    Столбцы добавляются, а не пересоздаются: в базе лежит история часов и выплат,
+    терять её из-за новой версии нельзя.
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(opportunities)")}
+    for column in ("first_seen", "last_seen"):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE opportunities ADD COLUMN {column} TEXT")
+    conn.execute(
+        "UPDATE opportunities SET first_seen = COALESCE(first_seen, fetched_at), "
+        "last_seen = COALESCE(last_seen, fetched_at)"
+    )
+    # индекс создаётся здесь, а не в SCHEMA: на старой базе столбца ещё нет
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_opportunities_first_seen ON opportunities(first_seen)"
+    )
+    conn.commit()
 
 
 @dataclass
@@ -153,14 +177,31 @@ class Opportunity:
         }
 
 
-def upsert_opportunities(items: List[Opportunity]) -> int:
-    """Insert or refresh opportunities. Returns how many rows were touched."""
+def upsert_opportunities(items: List[Opportunity], fresh_only: bool = False) -> int:
+    """Insert or refresh opportunities. Returns how many rows were touched.
+
+    ``fresh_only=True`` возвращает только те, которых в базе ещё не было, — именно
+    эта цифра отвечает на вопрос «что появилось нового», а не «сколько строк
+    обновилось». Свежие задачи и есть деньги: занятые разбирают в первые часы.
+    """
     if not items:
         return 0
     conn = connect()
+    new_ids: List[str] = []
     try:
+        known = {
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM opportunities WHERE id IN (%s)"
+                % ",".join("?" * len(items)),
+                [item.id for item in items],
+            )
+        }
+        now = _utcnow()
         for item in items:
             row = item.to_row()
+            row["first_seen"] = now
+            row["last_seen"] = now
             cols = ", ".join(row.keys())
             placeholders = ", ".join(f":{k}" for k in row)
             conn.execute(
@@ -168,13 +209,46 @@ def upsert_opportunities(items: List[Opportunity]) -> int:
                 f"ON CONFLICT(id) DO UPDATE SET "
                 f"score=excluded.score, reward_usd=excluded.reward_usd, "
                 f"rationale=excluded.rationale, fetched_at=excluded.fetched_at, "
-                f"payload=excluded.payload, status=excluded.status",
+                f"payload=excluded.payload, status=excluded.status, "
+                f"last_seen=excluded.last_seen",
                 row,
             )
+            if item.id not in known:
+                new_ids.append(item.id)
         conn.commit()
     finally:
         conn.close()
-    return len(items)
+    return len(new_ids) if fresh_only else len(items)
+
+
+def fresh_opportunities(minutes: int = 180, limit: int = 20) -> List[Dict[str, Any]]:
+    """Что появилось за последние N минут — по первому появлению, а не по отдаче API."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, channel, title, url, reward_usd, score, first_seen, status "
+            "FROM opportunities "
+            "WHERE first_seen >= datetime('now', ?) AND status='queued' "
+            "ORDER BY first_seen DESC LIMIT ?",
+            (f"-{int(minutes)} minutes", limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def age_hours(first_seen: Optional[str]) -> Optional[float]:
+    """Сколько часов задача известна ферме (по первому появлению)."""
+    if not first_seen:
+        return None
+    try:
+        stamp = first_seen.replace("Z", "+00:00")
+        moment = datetime.fromisoformat(stamp)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return round((datetime.now(timezone.utc) - moment).total_seconds() / 3600.0, 1)
 
 
 def top_opportunities(limit: int = 20, channel: Optional[str] = None) -> List[sqlite3.Row]:
@@ -254,15 +328,36 @@ def record_payout(
 def verify_payout(payout_id: int) -> bool:
     """Human-only step: mark a claimed payout as verified income."""
     conn = connect()
+    row = None
     try:
         cur = conn.execute(
             "UPDATE payouts SET verified=1, verified_at=? WHERE id=?",
             (_utcnow(), payout_id),
         )
+        if cur.rowcount:
+            row = conn.execute(
+                "SELECT channel, amount, currency FROM payouts WHERE id=?", (payout_id,)
+            ).fetchone()
         conn.commit()
-        return cur.rowcount > 0
     finally:
         conn.close()
+
+    if row is not None:
+        # Подтверждённые деньги — единственный настоящий результат: по ним робот
+        # понимает, какой канал и плейбук реально приносят доход.
+        try:
+            from agent import learning
+
+            learning.outcome(
+                channel=row["channel"],
+                amount=float(row["amount"] or 0.0),
+                subject=row["channel"],
+                detail=f"{row['amount']} {row['currency']} подтверждено",
+            )
+            learning.mark_updated()
+        except Exception:
+            pass
+    return row is not None
 
 
 def set_status(opportunity_id: str, status: str) -> bool:

@@ -123,7 +123,8 @@ def test_prepare_does_not_duplicate_work(monkeypatch: pytest.MonkeyPatch) -> Non
     assert inbox.counts()["ready"] == 1
 
 
-def test_status_and_health_track_the_heartbeat() -> None:
+def test_status_and_health_track_the_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ELIGIBILITY_COUNTRY", "DE")
     assert autopilot.status()["state"] == "idle"
     assert autopilot.health()["status"] == "degraded"
 

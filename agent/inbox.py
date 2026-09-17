@@ -132,9 +132,45 @@ def resolve(item_id: int, status: str) -> bool:
             (status, item_id),
         )
         conn.commit()
-        return cursor.rowcount > 0
+        resolved = cursor.rowcount > 0
     finally:
         conn.close()
+
+    if resolved and status in ("published", "skipped"):
+        item = get(item_id)
+        _learn_from_decision(item or {}, status)
+    return resolved
+
+
+def _learn_from_decision(item: Dict[str, Any], status: str) -> None:
+    """Решение человека — единственный честный сигнал, что стоит брать дальше."""
+    try:
+        from agent import learning
+        from agent.ledger import get_opportunity
+
+        opportunity_id = str(item.get("opportunity_id") or "")
+        if not opportunity_id:
+            return
+        opportunity = get_opportunity(opportunity_id) or {}
+        payload = opportunity.get("payload") or {}
+        if isinstance(payload, str):
+            import json as _json
+
+            try:
+                payload = _json.loads(payload or "{}")
+            except Exception:
+                payload = {}
+        learning.decide(
+            opportunity_id,
+            status,
+            channel=str(opportunity.get("channel") or item.get("channel") or ""),
+            playbook=str(payload.get("playbook") or ""),
+            reward_usd=float(opportunity.get("reward_usd") or 0.0),
+            query=str(payload.get("query") or ""),
+        )
+        learning.mark_updated()
+    except Exception:
+        pass  # обучение не должно мешать работе очереди
 
 
 def counts() -> Dict[str, int]:

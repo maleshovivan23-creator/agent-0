@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pyflakes
+      - name: Линтер
+        run: python -m pyflakes agent/ tests/
+      - name: Тесты
+        run: python -m pytest -q
+      - name: Проверка готовности (без секретов — только структура)
+        run: python -m agent.main проверка --json > readiness.json; test -s readiness.json
+      - name: Проверка, что CLI отвечает на русские команды
+        run: |
+          python -m agent.main направления
+          python -m agent.main входящие --limit 3
+          python -m agent.main политика

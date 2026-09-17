@@ -64,21 +64,26 @@ def resolve_channel(name: Optional[str]) -> Optional[str]:
 class CycleResult:
     channels: List[Dict[str, Any]] = field(default_factory=list)
     found: int = 0
+    new: int = 0
     kept: int = 0
     dropped: int = 0
     triaged: int = 0
     pipeline_ev_usd: float = 0.0
     blocked: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    #: Сколько задач в топе оказались убыточными (в выручку не попали).
+    low_value_top: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "channels": self.channels,
             "found": self.found,
+            "new": self.new,
             "kept": self.kept,
             "dropped": self.dropped,
             "triaged": self.triaged,
             "pipeline_ev_usd": round(self.pipeline_ev_usd, 2),
+            "low_value_top": self.low_value_top,
             "blocked": self.blocked,
             "notes": self.notes,
         }
@@ -248,6 +253,7 @@ def run_channel(
 
     elapsed = round(time.time() - started, 1)
     with _DB_LOCK:
+        new = upsert_opportunities(items, fresh_only=True)
         kept = upsert_opportunities(items)
         record_run(
             name,
@@ -255,7 +261,7 @@ def run_channel(
             found=len(items),
             kept=kept,
             policy="allowed",
-            note=f"{elapsed}s, триаж {triaged}, отсеяно {dropped}",
+            note=f"{elapsed}s, новых {new}, триаж {triaged}, отсеяно {dropped}",
         )
 
     top = [
@@ -330,11 +336,16 @@ def run_cycle(
     for outcome in outcomes:
         result.channels.append(outcome)
         result.found += int(outcome.get("found", 0))
+        result.new += int(outcome.get("new", 0))
         result.kept += int(outcome.get("kept", 0))
         result.dropped += int(outcome.get("dropped", 0))
         result.triaged += int(outcome.get("triaged", 0))
         for item in outcome.get("top", []):
-            result.pipeline_ev_usd += float(item.get("expected_value_usd") or 0.0)
+            # Отрицательная оценка означает «грабить себя дороже, чем заработать»:
+            # в ожидаемую выручку такие задачи не идут, но остаются в списке отсева.
+            result.pipeline_ev_usd += max(0.0, float(item.get("expected_value_usd") or 0.0))
+            if float(item.get("ev_per_hour") or 0.0) < 0:
+                result.low_value_top += 1
         if not outcome.get("allowed"):
             result.blocked.append(
                 {
@@ -363,14 +374,15 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
     whole project is built to avoid — the honest place for them is the
     "низкая ценность" list in ``low_value``.
     """
-    from agent.ledger import connect
+    from agent.ledger import age_hours, connect
 
     floor = min_ev_per_hour if min_ev_per_hour is not None else get_float("MIN_EV_PER_HOUR", 3.0)
 
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, title, channel, url, reward_usd, score, rationale, payload, status "
+            "SELECT id, title, channel, url, reward_usd, score, rationale, payload, "
+            "status, first_seen "
             "FROM opportunities WHERE status='queued' ORDER BY score DESC LIMIT 60",
         ).fetchall()
     finally:
@@ -398,9 +410,17 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
             f"python -m agent.main hours-add --channel {row['channel']} --hours N --id {row['id']}",
             f"python -m agent.main payout-add --channel {row['channel']} --amount X --evidence 'PR #N merged'",
         ]
+        first_seen = None
+        try:
+            first_seen = row["first_seen"]
+        except (IndexError, KeyError):
+            first_seen = None
+        age = age_hours(first_seen or payload.get("first_seen"))
         actions.append(
             {
                 "id": row["id"],
+                "age_hours": age,
+                "is_new": age is not None and age <= 24.0,
                 "title": row["title"],
                 "channel": row["channel"],
                 "url": row["url"],
@@ -426,7 +446,7 @@ def low_value(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[D
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT id, title, channel, reward_usd, score, rationale, payload "
+            "SELECT id, title, channel, reward_usd, score, rationale, payload, first_seen "
             "FROM opportunities WHERE status='queued' ORDER BY score DESC LIMIT 60",
         ).fetchall()
     finally:

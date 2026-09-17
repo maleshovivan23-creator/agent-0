@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent import inbox, proposals, quests
+from agent import inbox, learning, proposals, quests, watchdog
 from agent.config import get_env, get_float, project_root
 from agent.farm import next_actions, run_cycle
 from agent.ledger import get_opportunity, get_state, set_state, summary
@@ -78,9 +78,11 @@ class TickResult:
     finished_at: str = ""
     duration_s: float = 0.0
     found: int = 0
+    new: int = 0
     kept: int = 0
     triaged: int = 0
     prepared: List[Dict[str, Any]] = field(default_factory=list)
+    problems: List[Dict[str, Any]] = field(default_factory=list)
     skipped: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     next_interval: float = DEFAULT_MIN_INTERVAL
@@ -93,9 +95,11 @@ class TickResult:
             "finished_at": self.finished_at,
             "duration_s": round(self.duration_s, 1),
             "found": self.found,
+            "new": self.new,
             "kept": self.kept,
             "triaged": self.triaged,
             "prepared": self.prepared,
+            "problems": self.problems,
             "skipped": self.skipped,
             "notes": self.notes,
             "next_interval": round(self.next_interval),
@@ -261,6 +265,7 @@ def tick(prepare_limit: Optional[int] = None) -> TickResult:
 
     cycle = run_cycle()
     result.found = cycle.found
+    result.new = getattr(cycle, "new", 0)
     result.kept = cycle.kept
     result.triaged = cycle.triaged
     result.pipeline_ev_usd = cycle.pipeline_ev_usd
@@ -273,7 +278,7 @@ def tick(prepare_limit: Optional[int] = None) -> TickResult:
 
     low, high = intervals()
     previous = float(get_state("autopilot.interval", low) or low)
-    if prepared:
+    if prepared or getattr(result, "new", 0):
         result.next_interval = low
     elif result.found == 0:
         result.next_interval = _clamp(previous * 1.5, low, high)
@@ -292,12 +297,49 @@ def tick(prepare_limit: Optional[int] = None) -> TickResult:
     set_state("autopilot.last_result", result.as_dict())
     set_state("autopilot.inbox_ready", inbox.counts()["ready"])
 
-    if prepared or result.kept:
-        lines = [f"AGENT-0: проход завершён (найдено {result.found}, новый EV ${result.pipeline_ev_usd:,.0f})"]
+    problems = watchdog.inspect()
+    result.problems = [problem.as_dict() for problem in problems]
+    set_state("watchdog.last_state", watchdog.state())
+
+    should_notify = bool(prepared) or bool(result.kept) or bool(problems)
+    if should_notify and _nudge_allowed(problems):
+        lines = [f"AGENT-0: проход завершён — найдено {result.found}, "
+                 f"новых {result.new}, EV ${result.pipeline_ev_usd:,.0f}"]
         for item in prepared:
-            lines.append(f"готово к публикации: {item['title'][:70]} → python -m agent.main inbox")
+            lines.append(f"готово к публикации: {item['title'][:70]} → python -m agent.main входящие")
+        lines.extend(watchdog.nudge_lines())
         notify(lines)
     return result
+
+
+def _nudge_allowed(problems: List[Any]) -> bool:
+    """Не повторять одно и то же каждые пять минут — иначе уведомления выключат.
+
+    Первое появление проблемы и смена набора проблем отправляются сразу,
+    дальше — не чаще, чем раз в AUTOPILOT_NUDGE_HOURS.
+    """
+    signature = sorted(f"{problem.key}:{problem.severity}" for problem in problems)
+    previous = get_state("watchdog.last_signature") or []
+    if signature != previous:
+        set_state("watchdog.last_signature", signature)
+        set_state("watchdog.last_nudge", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        return bool(signature)
+    if not signature:
+        return False
+    last = get_state("watchdog.last_nudge")
+    age_limit = get_float("AUTOPILOT_NUDGE_HOURS", 6.0) * 3600
+    if not last:
+        return True
+    try:
+        moment = datetime.fromisoformat(str(last))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    if (datetime.now(timezone.utc) - moment).total_seconds() >= age_limit:
+        set_state("watchdog.last_nudge", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        return True
+    return False
 
 
 def run(
@@ -384,12 +426,23 @@ def health() -> Dict[str, Any]:
     except Exception as exc:
         db_ok = False
         problems.append(f"база недоступна: {exc.__class__.__name__}")
+
+    watch: Dict[str, Any] = {"status": "ok", "problems": [], "notes": []}
+    try:
+        watch = watchdog.state()
+        problems.extend(
+            f"{problem['title']}: {problem['advice']}" for problem in watch["problems"]
+        )
+    except Exception:
+        pass
+
     status_value = "stopped" if data["stop_reason"] else ("ok" if not problems else "degraded")
     return {
         "status": status_value,
         "problems": problems,
         "db": db_ok,
         "autopilot": data,
+        "watchdog": watch,
         "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -415,7 +468,8 @@ def shift_report(hours: float = 24.0) -> str:
     last = auto.get("last_result") or {}
     if last:
         lines += [
-            f"- Последний проход: найдено {last.get('found', 0)}, "
+            f"- Последний проход: найдено {last.get('found', 0)} "
+            f"(впервые {last.get('new', 0)}), "
             f"подготовлено {len(last.get('prepared', []))}, "
             f"EV конвейера ${float(last.get('pipeline_ev_usd') or 0):,.0f} "
             f"({last.get('started_at', '')})",
@@ -434,6 +488,19 @@ def shift_report(hours: float = 24.0) -> str:
             f"  действие: {item['action']}\n"
             f"  текст: `python -m agent.main входящие show {item['id']}`"
         )
+
+    problems = watchdog.inspect()
+    lines += ["", "## Требует вашего внимания", ""]
+    if not problems:
+        lines.append("- проблем нет: каналы отвечают, очередь не зависла")
+    for problem in problems:
+        mark = "!!" if problem.severity == "critical" else "!"
+        lines.append(f"- **{mark} {problem.title}** — {problem.detail}\n  → {problem.advice}")
+
+    learned = learning.summary_lines()
+    if learned:
+        lines += ["", "## Чему научился робот", ""]
+        lines.extend(f"- {line}" for line in learned)
 
     from agent.farm import low_value, next_actions
 

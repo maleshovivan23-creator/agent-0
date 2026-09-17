@@ -81,6 +81,7 @@ class GitHubBountyChannel(Channel):
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        self.token = token
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.session = build_session("AGENT-0-bounty-harvester/1.0", headers)
@@ -99,6 +100,30 @@ class GitHubBountyChannel(Channel):
         queries += [f"{query} created:>{cutoff}" for query in FRESH_QUERIES]
         return queries
 
+    # ------------------------------------------------------------------ quota
+
+    def _remember_quota(self, response: Any) -> None:
+        """Запомнить остаток лимита, чтобы не жечь его вслепую."""
+        try:
+            headers = getattr(response, "headers", None) or {}
+            remaining = headers.get("x-ratelimit-remaining")
+            reset = headers.get("x-ratelimit-reset")
+            if remaining is None:
+                return
+            from agent.ledger import set_state
+
+            set_state(
+                "github.rate_limit",
+                {
+                    "remaining": int(remaining),
+                    "limit": int(headers.get("x-ratelimit-limit") or 0),
+                    "reset": int(reset) if reset else None,
+                    "token": bool(self.token),
+                },
+            )
+        except Exception:
+            pass  # учёт лимита не должен ломать сбор
+
     # ------------------------------------------------------------------ http
 
     def _search(self, query: str, per_page: int) -> List[Dict[str, Any]]:
@@ -114,11 +139,23 @@ class GitHubBountyChannel(Channel):
             self.last_error = f"network: {exc.__class__.__name__}"
             return []
 
+        self._remember_quota(response)
         if response.status_code in (403, 429):
             self.rate_limited = True
+            reset = (getattr(response, "headers", None) or {}).get("x-ratelimit-reset")
+            when = ""
+            try:
+                from datetime import datetime, timezone
+
+                if reset:
+                    moment = datetime.fromtimestamp(int(reset), tz=timezone.utc)
+                    when = f" Лимит восстановится в {moment:%H:%M} UTC."
+            except (TypeError, ValueError):
+                when = ""
             self.last_error = (
-                "GitHub rate limit (30 поисковых запросов в минуту для "
-                "анонимных вызовов). Пауза до следующего цикла."
+                "GitHub вернул 403: лимит запросов исчерпан." + when
+                + (" Добавьте GITHUB_TOKEN в .env — лимит вырастет с 60 до 5000 запросов/час."
+                   if not self.token else "")
             )
             return []
         if response.status_code != 200:
@@ -188,6 +225,7 @@ class GitHubBountyChannel(Channel):
             score=score.total,
             rationale=rationale,
             payload={
+                "query": self._query_for(item),
                 "labels": labels,
                 "body": body[:1500],
                 "comments": comments,
@@ -201,6 +239,25 @@ class GitHubBountyChannel(Channel):
                 "age_days": _age_days(item.get("created_at")),
             },
         )
+
+    def _query_for(self, item: Dict[str, Any]) -> str:
+        """Какой запрос нашёл эту задачу (по совпадению id в результатах поиска)."""
+        for query, hits in getattr(self, "_hits_by_query", {}).items():
+            for hit in hits:
+                if str(hit.get("id")) == str(item.get("id")):
+                    return query
+        return ""
+
+    def _note_query_yield(self, hits_by_query: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Записать, сколько задач принёс каждый запрос: на этом робот учится."""
+        try:
+            from agent import learning
+
+            for query, hits in hits_by_query.items():
+                learning.observe(query, len(hits), channel=self.name)
+            learning.mark_updated()
+        except Exception:
+            pass  # обучение вторично по отношению к сбору
 
     # -------------------------------------------------------------- harvesting
 
@@ -220,13 +277,28 @@ class GitHubBountyChannel(Channel):
         self.rate_limited = False
         raw_items: Dict[str, Dict[str, Any]] = {}
 
+        # Запросы, которые уже приносили отправленные заявки, идут первыми:
+        # бюджет поиска тратится на то, что доказало пользу.
+        try:
+            from agent import learning
+
+            self.queries = learning.order_queries(self.queries)
+        except Exception:
+            pass
+
         per_query = max(5, limit // max(1, len(self.queries)))
+        fresh_by_query: Dict[str, List[Dict[str, Any]]] = {}
         for index, query in enumerate(self.queries):
             if index:
                 time.sleep(2.0)  # stay well inside 30 req/min
-            for item in self._search(query, per_query):
+            hits = list(self._search(query, per_query))
+            fresh_by_query[query] = hits
+            for item in hits:
                 key = str(item.get("id") or item.get("html_url"))
                 raw_items.setdefault(key, item)
+
+        self._hits_by_query = fresh_by_query
+        self._note_query_yield(fresh_by_query)
 
         # Stage 1: cheap triage without any extra API calls. Junk is dropped
         # here so the small repo-lookup budget is spent only on real leads.

@@ -88,13 +88,49 @@ def test_github_harvest_filters_junk_and_ranks(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_github_rate_limit_is_handled_without_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     channel = GitHubBountyChannel(queries=["label:bounty"])
     channel.session = FakeSession([], search_status=403)
     monkeypatch.setattr("agent.channels.github_bounties.time.sleep", lambda _s: None)
 
     assert channel.harvest(limit=5) == []
     assert channel.rate_limited is True
-    assert "rate limit" in channel.last_error.lower()
+    assert "лимит" in channel.last_error.lower(), channel.last_error
+    # сообщение должно подсказывать путь решения, а не только констатировать факт
+    assert "GITHUB_TOKEN" in channel.last_error
+
+
+def test_rate_limit_hint_is_not_shown_when_a_token_is_already_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_" + "x" * 36)
+    channel = GitHubBountyChannel(queries=["label:bounty"])
+    channel.session = FakeSession([], search_status=403)
+    monkeypatch.setattr("agent.channels.github_bounties.time.sleep", lambda _s: None)
+
+    channel.harvest(limit=5)
+    assert "GITHUB_TOKEN" not in channel.last_error, "совет не нужен тому, у кого токен есть"
+
+
+def test_search_quota_is_remembered_for_the_watchdog(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "quota.db"))
+    channel = GitHubBountyChannel(queries=["label:bounty"])
+
+    class QuotaResponse:
+        status_code = 200
+        headers = {"x-ratelimit-remaining": "7", "x-ratelimit-limit": "30",
+                   "x-ratelimit-reset": "1800000000"}
+        ok = True
+
+        def json(self) -> dict:
+            return {"items": []}
+
+    channel.session = FakeSession([])
+    channel._remember_quota(QuotaResponse())
+    from agent.ledger import get_state
+
+    state = get_state("github.rate_limit") or {}
+    assert state.get("remaining") == 7
 
 
 def test_bug_recon_refuses_without_scope() -> None:

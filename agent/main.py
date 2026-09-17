@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent import autopilot as autopilot_mod
-from agent import setupenv
+from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
 from agent import eligibility, payouts, quests
@@ -119,7 +119,16 @@ def cmd_next(args: argparse.Namespace) -> int:
     print()
     for index, item in enumerate(actions, 1):
         reward = money(item["reward_usd"]) if item["reward_usd"] else "награда н/д"
-        print(f"{index}. {paint(item['title'][:70], BOLD)}")
+        age = item.get("age_hours")
+        badge = ""
+        if age is not None:
+            if age <= 6:
+                badge = paint(f"  свежая ({age:.0f}ч)", GREEN)
+            elif age <= 24:
+                badge = paint(f"  {age:.0f}ч", YELLOW)
+            else:
+                badge = paint(f"  {age / 24:.0f} дн. в очереди", RED)
+        print(f"{index}. {paint(item['title'][:70], BOLD)}{badge}")
         print(f"   {reward} · плейбук {item['playbook']} · триаж {item['triage']} · "
               f"EV/час ~{money(item['ev_per_hour'])} · оценка {item['effort_hours']}ч")
         print(f"   {DIM}{item['why'][:150]}{RESET}")
@@ -143,9 +152,10 @@ def _print_channel_result(outcome: Dict[str, Any]) -> None:
         return
     if outcome.get("error"):
         print(f"{paint('ОШИБКА', RED)} {name}: {outcome['error']}")
+    fresh = paint(f"новых {outcome['new']}", GREEN) if outcome.get("new") else "новых 0"
     print(
         f"{paint('ГОТОВО', GREEN)} {name}: найдено {outcome.get('found', 0)}, "
-        f"сохранено {outcome.get('kept', 0)}, отсеяно {outcome.get('dropped', 0)}, "
+        f"{fresh}, сохранено {outcome.get('kept', 0)}, отсеяно {outcome.get('dropped', 0)}, "
         f"проверено триажем {outcome.get('triaged', 0)}"
     )
     for item in outcome.get("top", [])[:5]:
@@ -165,12 +175,17 @@ def cmd_cycle(args: argparse.Namespace) -> int:
     for note in result.notes:
         print(paint(f"примечание: {note}", YELLOW))
     print(
-        f"Итого: найдено {result.found}, сохранено {result.kept}, "
+        f"Итого: найдено {result.found} (впервые {result.new}), сохранено {result.kept}, "
         f"отсеяно как оплаченные {result.dropped}, триаж по {result.triaged}"
     )
-    print(f"Ожидаемая выручка по топу этого цикла: {money(result.pipeline_ev_usd)}")
+    if result.pipeline_ev_usd:
+        print(f"Ожидаемая выручка по топу этого цикла: {paint(money(result.pipeline_ev_usd), BOLD)}")
+    if getattr(result, "low_value_top", 0):
+        print(paint(f"Убыточных задач в топе: {result.low_value_top} — конкуренция съедает "
+                    f"награду, они в выручку не попали. Ждите свежих: их разбирают "
+                    f"в первые часы.", YELLOW))
     if result.kept:
-        print(f"Дальше: {paint('python -m agent.main next', BOLD)}")
+        print(f"Дальше: {paint('python -m agent.main дальше', BOLD)}")
     return 0
 
 
@@ -714,6 +729,66 @@ def cmd_quest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watchdog(args: argparse.Namespace) -> int:
+    data = watchdog.state()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0 if data["status"] == "ok" else 1
+
+    level = {"ok": paint("всё в порядке", GREEN),
+             "warning": paint("есть замечания", YELLOW),
+             "critical": paint("требуется вмешательство", RED)}[data["status"]]
+    print(paint("Дозор:", BOLD), level)
+    print()
+    if data["problems"]:
+        for problem in data["problems"]:
+            mark = paint("!!", RED) if problem["severity"] == "critical" else paint("!", YELLOW)
+            print(f"  {mark} {problem['title']}")
+            print(f"     что случилось: {problem['detail']}")
+            print(f"     что делать: {problem['advice']}")
+    else:
+        print("  проблем нет.")
+    if data["notes"]:
+        print()
+        print(paint("Ждут настройки (это не поломка):", DIM))
+        for note in data["notes"]:
+            print(f"  • {note}")
+
+    print()
+    print(paint("Чему научился робот:", BOLD))
+    for line in learning.summary_lines():
+        print(f"  • {line}")
+    return 0
+
+
+def cmd_learning(args: argparse.Namespace) -> int:
+    data = learning.learned_state()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    print(paint("Обучение на ваших решениях", BOLD))
+    print(f"  наблюдений: {data['observations']} · решений: {data['decisions']} · "
+          f"отправлено: {data['published']} · заработано: {money(data['earned_usd'])}")
+    print()
+    if data["queries"]:
+        print(paint("Запросы (вес: 1.0 — нейтрально, больше — продуктивнее):", BOLD))
+        for item in data["queries"]:
+            print(f"  [{item['weight']:>4.2f}] {item['subject'][:62]}")
+            print(f"          новых задач {item['new_items']:.0f} за {item['observations']} проходов · "
+                  f"отправлено {item['published']} · пропущено {item['skipped']}")
+    if data["playbooks"]:
+        print()
+        print(paint("Типы работ:", BOLD))
+        for item in data["playbooks"]:
+            print(f"  {item['subject'][:50]}: отправлено {item['published']} из {item['decisions']}")
+    if not data["queries"] and not data["playbooks"]:
+        print("  данных пока нет: решения по первым заданиям включат обучение.")
+    print()
+    for line in learning.summary_lines():
+        print(f"  • {line}")
+    return 0
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Заполнить .env: секреты вводятся скрыто и никогда не печатаются."""
     if args.show:
@@ -925,6 +1000,8 @@ ALIASES: Dict[str, str] = {
     "правила": "policy",
     "кто-я": "whoami",
     "настройка": "setup",
+    "дозор": "watchdog",
+    "обучение": "learning",
     "автопилот": "autopilot",
     "входящие": "inbox",
     "входящие-отправлено": "inbox-done",
@@ -1020,6 +1097,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    watch = sub.add_parser("watchdog", help="дозор: что сломалось, пока вас не было")
+    watch.add_argument("--json", action="store_true")
+
+    learn = sub.add_parser("learning", help="что робот понял по вашим решениям")
+    learn.add_argument("--json", action="store_true")
+
     setup_cmd = sub.add_parser(
         "setup",
         help="заполнить .env (секреты вводятся скрыто)",
@@ -1105,6 +1188,8 @@ HANDLERS = {
     "policy": cmd_policy,
     "whoami": cmd_whoami,
     "setup": cmd_setup,
+    "watchdog": cmd_watchdog,
+    "learning": cmd_learning,
     "autopilot": cmd_autopilot,
     "inbox": cmd_inbox,
     "inbox-done": lambda args: cmd_inbox_resolve(args, "published"),

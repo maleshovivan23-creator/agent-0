@@ -33,6 +33,8 @@ from urllib.parse import parse_qs, urlparse
 from agent import autopilot as autopilot_mod
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
+from agent import learning as learning_mod
+from agent import watchdog as watchdog_mod
 from agent import payouts as payout_rails
 from agent.config import get_env
 from agent.farm import low_value, next_actions, overview, run_cycle
@@ -164,6 +166,8 @@ def collect_state() -> Dict[str, Any]:
         "country": country,
         "readiness": _readiness(),
         "autopilot": autopilot_mod.status(),
+        "watchdog": watchdog_mod.state(),
+        "learning": learning_mod.learned_state(),
         "inbox": inbox_mod.pending(limit=10),
         "inbox_counts": inbox_mod.counts(),
         "queue": queue,
@@ -278,6 +282,16 @@ PAGE = r"""<!doctype html>
     <h2>Автопилот и очередь к публикации</h2>
     <div id="autopilot"></div>
     <div id="inbox" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Дозор: что сломалось, пока вас не было</h2>
+    <div id="watchdog"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Чему научился робот</h2>
+    <div id="learning"></div>
   </div>
 
   <div class="card wide" style="margin-bottom:14px">
@@ -458,6 +472,41 @@ async function resolveItem(id, status) {
   refresh();
 }
 
+function renderWatchdog(data) {
+  if (!data) { $("watchdog").innerHTML = ""; return; }
+  const level = {ok: ["on", "всё в порядке"], warning: ["info", "есть замечания"],
+                 critical: ["off", "нужно вмешательство"]}[data.status] || ["info", data.status];
+  const rows = (data.problems || []).map(p => `
+    <div class="item ${p.severity === "critical" ? "cold" : ""}">
+      <div class="t"><span class="pill ${p.severity === "critical" ? "off" : "info"}">${p.severity === "critical" ? "важно" : "замечание"}</span>
+        <b>${esc(p.title)}</b></div>
+      <div class="m">${esc(p.detail)}</div>
+      <div class="m">Что делать: ${esc(p.advice)}</div>
+    </div>`).join("");
+  const notes = (data.notes || []).map(n => `<div class="m">• ${esc(n)}</div>`).join("");
+  $("watchdog").innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:8px">
+      <span class="pill ${level[0]}">${level[1]}</span> проверено ${esc(data.checked_at)}</div>
+    ${rows || '<div class="muted">Проблем нет: каналы отвечают, очередь не зависла.</div>'}
+    ${notes ? `<div class="muted" style="margin-top:8px">Ждут настройки (не поломка):</div>${notes}` : ""}`;
+}
+
+function renderLearning(data) {
+  if (!data) { $("learning").innerHTML = ""; return; }
+  const queries = (data.queries || []).map(q => `
+    <div class="item ${q.weight > 1.1 ? "hot" : ""}">
+      <div class="t"><span class="pill info">вес ${q.weight.toFixed(2)}</span> <b>${esc(q.subject)}</b></div>
+      <div class="m">новых задач ${q.new_items} за ${q.observations} проходов ·
+        отправлено ${q.published} · пропущено ${q.skipped}</div>
+    </div>`).join("");
+  const playbooks = (data.playbooks || []).map(p =>
+    `<div class="m">${esc(p.subject)}: отправлено ${p.published} из ${p.decisions}</div>`).join("");
+  $("learning").innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:8px">
+      наблюдений ${data.observations} · решений ${data.decisions} · отправлено ${data.published} ·
+      заработано ${money(data.earned_usd)}</div>
+    ${queries || '<div class="muted">Данных пока нет: обучение включается, когда вы отправите или пропустите первые задания.</div>'}
+    ${playbooks ? `<div class="muted" style="margin-top:8px">Типы работ:</div>${playbooks}` : ""}`;
+}
+
 function renderReadiness(data) {
   if (!data) { $("readiness").innerHTML = '<span class="muted">Проверка недоступна.</span>'; return; }
   const style = {ok: ["on", "ок"], warn: ["info", "важно"], block: ["off", "блокер"]};
@@ -535,6 +584,8 @@ async function refresh() {
 
   renderReadiness(s.readiness);
   renderAutopilot(s.autopilot, s.inbox_counts);
+  renderWatchdog(s.watchdog);
+  renderLearning(s.learning);
   renderInbox(s.inbox, s.inbox_counts);
 
   const D = s.farm.directions || {directions: [], advice: []};
