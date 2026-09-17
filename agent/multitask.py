@@ -90,12 +90,13 @@ class WorkResult:
     path: str = ""
     note: str = ""
     error: str = ""
+    channel: str = ""
 
     def as_dict(self) -> Dict[str, Any]:
         return {
             "id": self.item_id, "kind": self.kind, "ok": self.ok,
             "seconds": round(self.seconds, 2), "path": self.path,
-            "note": self.note, "error": self.error,
+            "note": self.note, "error": self.error, "channel": self.channel,
         }
 
 
@@ -213,6 +214,7 @@ def run(items: List[Dict[str, Any]], parallel: Optional[int] = None,
             result = WorkResult(item_id=item.id, kind=item.kind, ok=False,
                                 error=f"{exc.__class__.__name__}: {exc}")
         result.seconds = time.time() - begin
+        result.channel = item.channel
         return result
 
     if take:
@@ -252,12 +254,41 @@ def run(items: List[Dict[str, Any]], parallel: Optional[int] = None,
     return payload
 
 
+#: Что именно делает человек по итогам работы робота — своё для каждого канала.
+HUMAN_STEPS = {
+    "github_bounties": "Опубликовать заявку в задаче на GitHub от своего имени "
+                       "(`входящие show <№>` — текст готов)",
+    "agent_marketplaces": "Отправить квест на площадке: "
+                          "`площадка отправить <id> --файл <черновик> --подтверждаю`",
+    "audit_contests": "Подтвердить срок на площадке и идти по досье: "
+                      "`досье <id>` — где править и что запускать",
+}
+
+
+def human_steps(results: List[Dict[str, Any]]) -> List[str]:
+    """Шаги человека по каналам: не подсказывать команду чужого канала."""
+    steps: List[str] = []
+    for result in results:
+        channel = str(result.get("channel") or "")
+        step = HUMAN_STEPS.get(channel)
+        if step and step not in steps:
+            steps.append(step)
+    return steps
+
+
 def write_journal(payload: Dict[str, Any]) -> Path:
-    """Журнал прохода: его читает человек, поэтому он на русском и с командами."""
+    """Журнал прохода: его читает человек, поэтому он на русском и с командами.
+
+    Проходы за один день дописываются в один файл: история дня не затирается,
+    а человек читает последний сверху раздел.
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     path = project_root() / "reports" / f"multitask-{stamp}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(summarize(payload), encoding="utf-8")
+    text = summarize(payload)
+    if path.exists() and path.read_text(encoding="utf-8").strip():
+        text = text + "\n---\n\n" + path.read_text(encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -277,12 +308,12 @@ def summarize(payload: Dict[str, Any]) -> str:
         mark = "готово" if result["ok"] else "ошибка"
         detail = result["path"] or result["note"] or result["error"] or ""
         lines.append(f"- {mark}: `{result['id']}` → {detail} ({result['seconds']} с)")
+    lines += ["", "## Что остаётся человеку", ""]
+    steps = human_steps(payload.get("results") or [])
+    lines += [f"- {step}" for step in steps] or [
+        "- Готовых артефактов нет — смотреть нечего",
+    ]
     lines += [
-        "",
-        "## Что остаётся человеку",
-        "",
-        "- Отправка на площадку: `площадка отправить <id> --файл <черновик> --подтверждаю`",
-        "- Публикация заявки от своего имени: ключ площадки и ответственность за текст — ваши",
         "- Часы своей работы: `python -m agent.main часы --channel <канал> --hours <часы>`",
         "- Подтверждение выплаты: `python -m agent.main выплата-подтвердить <id>` — только это доход",
         "",

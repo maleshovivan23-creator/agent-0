@@ -166,7 +166,8 @@ def test_journal_is_written_in_russian_with_the_human_step(tmp_path: Path,
         "started_at": "2026-09-17T12:00:00+00:00", "seconds": 4.2, "parallel": 3,
         "taken": ["a", "b"], "ok": 2, "failed": 0,
         "results": [{"id": "a", "kind": "quest", "ok": True, "seconds": 2.0,
-                     "path": "reports/quest-a.md", "note": "", "error": ""}],
+                     "path": "reports/quest-a.md", "note": "", "error": "",
+                     "channel": "agent_marketplaces"}],
     })
     text = journal.read_text(encoding="utf-8")
     assert "Многозадачный проход" in text
@@ -229,3 +230,46 @@ def test_cli_status_is_honest_about_parallelism(capsys: pytest.CaptureFixture) -
     output = capsys.readouterr().out
     assert "одновременно до" in output
     assert json.dumps(output[:20])  # вывод — текст, не падение
+
+
+def test_human_step_matches_the_channel(tmp_path: Path,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Для GitHub-задачи нельзя подсказывать команду площадки — это чужой канал."""
+    monkeypatch.setattr(multitask, "project_root", lambda: tmp_path)
+    journal = multitask.write_journal({
+        "started_at": "2026-09-17T13:00:00+00:00", "seconds": 1.0, "parallel": 2,
+        "taken": ["github:acme/parser#7"], "ok": 1, "failed": 0,
+        "results": [{"id": "github:acme/parser#7", "kind": "application", "ok": True,
+                     "seconds": 1.0, "path": "reports/inbox/app.md", "note": "",
+                     "error": "", "channel": "github_bounties"}],
+    })
+    text = journal.read_text(encoding="utf-8")
+    assert "Опубликовать заявку в задаче на GitHub" in text
+    assert "площадка отправить" not in text, "чужая команда только путает"
+
+
+def test_journal_keeps_the_earlier_passes_of_the_day(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(multitask, "project_root", lambda: tmp_path)
+    base = {"seconds": 1.0, "parallel": 1, "taken": [], "ok": 0, "failed": 0, "results": []}
+    first = multitask.write_journal({**base, "started_at": "2026-09-17T08:00:00+00:00"})
+    second = multitask.write_journal({**base, "started_at": "2026-09-17T18:00:00+00:00"})
+    assert first == second, "за день должен оставаться один файл"
+    text = second.read_text(encoding="utf-8")
+    assert "08:00:00" in text and "18:00:00" in text, "прошлые проходы не должны пропадать"
+
+
+def test_cli_names_the_right_human_step(capsys: pytest.CaptureFixture,
+                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Подсказка после прохода должна соответствовать каналу задачи."""
+    from agent import main
+
+    monkeypatch.setenv("MIN_EV_PER_HOUR", "1")
+    monkeypatch.setenv("ELIGIBILITY_COUNTRY", "DE")
+    monkeypatch.setenv("LLM_PROVIDER", "none")
+    upsert_opportunities([quest("github:acme/parser#7", ev=5.0, channel="github_bounties",
+                                title="Fix the tokenizer")])
+    assert main.main(["потоки", "--limit", "1", "--parallel", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "Опубликовать заявку в задаче на GitHub" in output
+    assert "площадка отправить" not in output

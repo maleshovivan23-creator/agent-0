@@ -1075,8 +1075,9 @@ def cmd_multitask(args: argparse.Namespace) -> int:
         print(f"  {mark}: {result['id']} → {detail} ({result['seconds']} с)")
     print()
     print(f"{DIM}Журнал: {outcome.get('journal', '—')}{RESET}")
-    print(f"{DIM}Отправку делает человек: python -m agent.main входящие → "
-          f"площадка отправить <id> --подтверждаю{RESET}")
+    steps = multitask_mod.human_steps(outcome["results"])
+    for step in steps or ["Готовых артефактов нет — смотреть нечего"]:
+        print(f"{DIM}Человеку: {step}{RESET}")
     return 0 if outcome["failed"] == 0 else 1
 
 
