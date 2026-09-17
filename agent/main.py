@@ -26,7 +26,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from agent import autopilot as autopilot_mod
 from agent import doctor as doctor_mod
+from agent import inbox as inbox_mod
 from agent import eligibility, payouts, quests
 from agent.config import get_env, load_environment, project_root
 from agent.farm import next_actions, overview, run_cycle
@@ -337,6 +339,8 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 def cmd_status_set(args: argparse.Namespace) -> int:
     if set_status(args.opportunity_id, args.status):
+        if args.status in ("proposed", "working", "done"):
+            inbox_mod.mark_published(args.opportunity_id)
         print(paint(f"Статус {args.opportunity_id} -> {args.status}", GREEN))
         return 0
     print(f"Возможность {args.opportunity_id} не найдена.")
@@ -708,6 +712,104 @@ def cmd_quest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_autopilot(args: argparse.Namespace) -> int:
+    if args.status:
+        data = autopilot_mod.status()
+        print(paint("Автопилот:", BOLD), data["state"])
+        print(f"  интервал: {data['interval']}с (диапазон {data['min_interval']}–{data['max_interval']}с)")
+        print(f"  проходов: {data['ticks']} · подготовлено артефактов: {data['prepared_total']} · "
+              f"в очереди к публикации: {data['inbox_ready']}")
+        if data["last_tick"]:
+            print(f"  последний проход: {data['last_tick']} "
+                  f"({data['last_tick_age_s']}с назад)")
+        if data["stop_reason"]:
+            print(paint(f"  остановлен: {data['stop_reason']}", YELLOW))
+        return 0
+
+    if autopilot_mod.stop_reason():
+        print(paint(f"Автопилот остановлен: {autopilot_mod.stop_reason()}", YELLOW))
+        print(f"Снять стоп: rm -f data/{autopilot_mod.KILL_SWITCH_NAME} "
+              f"и AUTOPILOT_ENABLED=true в .env")
+        return 0
+
+    def report(result: autopilot_mod.TickResult) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        print(f"[{stamp}] найдено {result.found}, сохранено {result.kept}, "
+              f"триаж {result.triaged}, подготовлено {len(result.prepared)}, "
+              f"EV ${result.pipeline_ev_usd:,.0f}, следующий проход через "
+              f"{result.next_interval / 60:.0f} мин")
+        for item in result.prepared:
+            print(f"    готово: {item['kind']} — {item['title'][:60]} "
+                  f"({item['path']})")
+        for note in result.skipped[:3]:
+            print(f"    пропущено: {note}")
+
+    if args.once:
+        report(autopilot_mod.tick(args.prepare))
+        print()
+        print(paint("Артефакты ждут одного действия человека: python -m agent.main inbox", DIM))
+        return 0
+
+    print(paint("Автопилот запущен. Ctrl+C — остановка, "
+                f"`touch data/{autopilot_mod.KILL_SWITCH_NAME}` — мгновенный стоп.", BOLD))
+    print(paint("Робот не публикует заявки, не отправляет квесты и не подтверждает выплаты.", DIM))
+    return autopilot_mod.run(ticks=args.ticks, on_tick=report)
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    if args.show:
+        item = inbox_mod.get(args.show)
+        if not item:
+            print(f"Элемент #{args.show} не найден.")
+            return 1
+        print(paint(f"#{item['id']} [{item['kind_title']}] {item['title']}", BOLD))
+        print(f"  награда/сводка: {item['summary']}")
+        print(f"  действие человека: {item['action']}")
+        print(f"  файл: {item['path']}")
+        print()
+        print(inbox_mod.text(args.show))
+        return 0
+
+    items = inbox_mod.recent(args.limit) if args.all else inbox_mod.pending(args.limit)
+    counts = inbox_mod.counts()
+    print(paint("Очередь к публикации (робот уже всё подготовил):", BOLD),
+          f"готово {counts['ready']} · отправлено {counts['published']} · пропущено {counts['skipped']}")
+    print()
+    if not items:
+        print("  пусто — запустите: python -m agent.main autopilot --once")
+        return 0
+    for item in items:
+        mark = {"ready": paint("готово", GREEN), "published": paint("отправлено", DIM),
+                "skipped": paint("пропущено", YELLOW)}.get(item["status"], item["status"])
+        print(f"  #{item['id']} [{mark}] {item['kind_title']}: {item['title'][:64]}")
+        print(f"      {item['summary']} · {item['action']}")
+    print()
+    print(paint("Показать текст: python -m agent.main inbox show <id>", DIM))
+    print(paint("Отметить: python -m agent.main inbox-done <id> | inbox-skip <id>", DIM))
+    return 0
+
+
+def cmd_inbox_resolve(args: argparse.Namespace, status: str) -> int:
+    if inbox_mod.resolve(args.item_id, status):
+        print(paint(f"#{args.item_id} -> {status}", GREEN))
+        return 0
+    print(f"#{args.item_id} не найден или уже закрыт.")
+    return 1
+
+
+def cmd_shift(args: argparse.Namespace) -> int:
+    text = autopilot_mod.shift_report(args.hours)
+    print(text)
+    if args.save:
+        reports = project_root() / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        path = reports / f"shift-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.md"
+        path.write_text(text + "\n", encoding="utf-8")
+        print()
+        print(paint(f"Сохранено: {path.relative_to(project_root())}", DIM))
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from agent.dashboard import serve
 
@@ -803,6 +905,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
 
+    auto = sub.add_parser("autopilot", help="автономный режим: работает без вас")
+    auto.add_argument("--once", action="store_true", help="один проход и выход")
+    auto.add_argument("--ticks", type=int, default=None, help="ограничить число проходов")
+    auto.add_argument("--prepare", type=int, default=None, help="сколько артефактов готовить за проход")
+    auto.add_argument("--status", action="store_true", help="состояние робота без запуска")
+
+    inbox_cmd = sub.add_parser("inbox", help="очередь готового к публикации")
+    inbox_cmd.add_argument("show", nargs="?", type=int, default=None, help="показать текст элемента")
+    inbox_cmd.add_argument("--all", action="store_true", help="включая отработанные")
+    inbox_cmd.add_argument("--limit", type=int, default=20)
+
+    done = sub.add_parser("inbox-done", help="отметить элемент отправленным")
+    done.add_argument("item_id", type=int)
+    skip = sub.add_parser("inbox-skip", help="отметить элемент ненужным")
+    skip.add_argument("item_id", type=int)
+
+    shift = sub.add_parser("shift", help="отчёт: что робот сделал без вас")
+    shift.add_argument("--hours", type=float, default=24.0)
+    shift.add_argument("--save", action="store_true")
+
     doctor_cmd = sub.add_parser("doctor", help="что нужно, чтобы начать зарабатывать")
     doctor_cmd.add_argument("--json", action="store_true")
 
@@ -837,6 +959,11 @@ HANDLERS = {
     "ledger": cmd_ledger,
     "policy": cmd_policy,
     "whoami": cmd_whoami,
+    "autopilot": cmd_autopilot,
+    "inbox": cmd_inbox,
+    "inbox-done": lambda args: cmd_inbox_resolve(args, "published"),
+    "inbox-skip": lambda args: cmd_inbox_resolve(args, "skipped"),
+    "shift": cmd_shift,
     "doctor": cmd_doctor,
     "quest": cmd_quest,
     "serve": cmd_serve,

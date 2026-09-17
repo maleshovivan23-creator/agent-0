@@ -1,0 +1,12 @@
+# Вариант без systemd: одна строка, робот просыпается сам.
+# Установка: crontab -e  → вставить строки ниже (замените /opt/agent-0 на свой путь).
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Автопилот: один проход каждые 15 минут. Свежие bounty забирают в первые часы,
+# поэтому чаще днём и реже ночью.
+*/15 6-23 * * *  cd /opt/agent-0 && flock -n data/autopilot.lock .venv/bin/python -m agent.main autopilot --once >> logs/cron.log 2>&1
+0 */3 * * *     cd /opt/agent-0 && flock -n data/autopilot.lock .venv/bin/python -m agent.main autopilot --once >> logs/cron.log 2>&1
+
+# Утренняя сводка: что робот сделал за ночь.
+0 9 * * *       cd /opt/agent-0 && .venv/bin/python -m agent.main shift --hours 24 --save >> logs/cron.log 2>&1

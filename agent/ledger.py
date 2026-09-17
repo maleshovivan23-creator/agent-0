@@ -70,6 +70,28 @@ CREATE TABLE IF NOT EXISTS hours (
     logged_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS inbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opportunity_id TEXT,
+    channel TEXT,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    path TEXT,
+    action TEXT,
+    summary TEXT,
+    status TEXT DEFAULT 'ready',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox(status);
+
+CREATE TABLE IF NOT EXISTS state (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT NOT NULL,
@@ -436,3 +458,48 @@ def summary() -> Dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+# ------------------------------------------------------------------ key/value
+
+
+def set_state(key: str, value: Any) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO state(key, value, updated_at) VALUES(?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, json.dumps(value, ensure_ascii=False), _utcnow()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_state(key: str, default: Any = None) -> Any:
+    conn = connect()
+    try:
+        row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return default
+    try:
+        return json.loads(row["value"])
+    except Exception:
+        return default
+
+
+def all_state() -> Dict[str, Any]:
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT key, value, updated_at FROM state").fetchall()
+    finally:
+        conn.close()
+    out: Dict[str, Any] = {}
+    for row in rows:
+        try:
+            out[row["key"]] = {"value": json.loads(row["value"]), "updated_at": row["updated_at"]}
+        except Exception:
+            out[row["key"]] = {"value": row["value"], "updated_at": row["updated_at"]}
+    return out

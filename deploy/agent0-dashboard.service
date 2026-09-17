@@ -1,0 +1,24 @@
+# AGENT-0: дашборд. Держите его рядом с автопилотом — он же отдаёт /healthz.
+[Unit]
+Description=AGENT-0 dashboard and health endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/agent-0
+EnvironmentFile=-/opt/agent-0/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/agent-0/.venv/bin/python -m agent.main serve --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/agent-0/data /opt/agent-0/reports
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

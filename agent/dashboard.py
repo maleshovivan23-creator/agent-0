@@ -30,7 +30,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
+from agent import autopilot as autopilot_mod
 from agent import doctor as doctor_mod
+from agent import inbox as inbox_mod
 from agent import payouts as payout_rails
 from agent.config import get_env
 from agent.farm import low_value, next_actions, overview, run_cycle
@@ -161,6 +163,9 @@ def collect_state() -> Dict[str, Any]:
         "rails": payout_rails.table(),
         "country": country,
         "readiness": _readiness(),
+        "autopilot": autopilot_mod.status(),
+        "inbox": inbox_mod.pending(limit=10),
+        "inbox_counts": inbox_mod.counts(),
         "queue": queue,
         "contests": contests,
         "next": next_actions(limit=5),
@@ -267,6 +272,12 @@ PAGE = r"""<!doctype html>
     <h2>Три направления — работают параллельно</h2>
     <div id="directions"></div>
     <div class="muted" style="font-size:11.5px;margin-top:6px" id="advice"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Автопилот и очередь к публикации</h2>
+    <div id="autopilot"></div>
+    <div id="inbox" style="margin-top:10px"></div>
   </div>
 
   <div class="card wide" style="margin-bottom:14px">
@@ -399,6 +410,54 @@ async function loadMoney(country) {
   } catch (e) { /* keep previous view */ }
 }
 
+function renderAutopilot(a, counts) {
+  if (!a) { $("autopilot").innerHTML = ""; return; }
+  const label = {running: ["on", "работает"], idle: ["info", "не запускался"],
+                 stale: ["off", "молчит"], stopped: ["off", "остановлен"]}[a.state] || ["info", a.state];
+  $("autopilot").innerHTML = `
+    <div class="item ${a.state === "running" ? "hot" : "cold"}">
+      <div class="t"><span class="pill ${label[0]}">${label[1]}</span>
+        <b>интервал ${a.interval}с</b> (${a.min_interval}–${a.max_interval}с) ·
+        проходов ${a.ticks} · подготовлено ${a.prepared_total}</div>
+      <div class="m">${a.last_tick ? "последний проход " + esc(a.last_tick) + " (" + a.last_tick_age_s + "с назад)" : "проходов ещё не было"}</div>
+      ${a.stop_reason ? `<div class="m">остановлен: ${esc(a.stop_reason)} · снять: rm -f data/STOP</div>` : ""}
+      <div class="m">Робот ищет, проверяет, планирует и пишет черновики. Публикация, отправка и подтверждение выплат — ваши.</div>
+    </div>`;
+}
+
+function renderInbox(items, counts) {
+  if (!counts) { $("inbox").innerHTML = ""; return; }
+  const rows = (items || []).map(i => `
+    <div class="item ${i.kind === "brief" ? "" : "hot"}">
+      <div class="t"><span class="pill info">${esc(i.kind_title)}</span> <b>${esc(i.title)}</b></div>
+      <div class="m">${esc(i.summary)}</div>
+      <div class="m">Действие: ${esc(i.action)}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="tiny" onclick="showText(${i.id})">Показать текст</button>
+        <button class="tiny" onclick="resolveItem(${i.id}, 'published')">Отправлено</button>
+        <button class="tiny" onclick="resolveItem(${i.id}, 'skipped')">Пропустить</button>
+      </div>
+    </div>`).join("");
+  $("inbox").innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">
+      Готово к отправке: <b>${counts.ready}</b> · отправлено: ${counts.published} · пропущено: ${counts.skipped}</div>
+    ${rows || '<div class="muted">Очередь пуста — запустите проход кнопкой «Прогнать цикл» или автопилотом.</div>'}
+    <pre id="inbox-text" style="display:none;white-space:pre-wrap;font-size:11.5px;margin-top:8px"></pre>`;
+}
+
+async function showText(id) {
+  const box = $("inbox-text");
+  const text = await (await fetch("/api/inbox/" + id + "/text")).text();
+  box.textContent = text;
+  box.style.display = "block";
+  try { await navigator.clipboard.writeText(text); box.textContent = "Скопировано в буфер.\n\n" + text; } catch (e) {}
+}
+
+async function resolveItem(id, status) {
+  await fetch("/api/inbox/resolve", {method: "POST", headers: {"Content-Type": "application/json"},
+                                     body: JSON.stringify({id, status})});
+  refresh();
+}
+
 function renderReadiness(data) {
   if (!data) { $("readiness").innerHTML = '<span class="muted">Проверка недоступна.</span>'; return; }
   const style = {ok: ["on", "ок"], warn: ["info", "важно"], block: ["off", "блокер"]};
@@ -475,6 +534,8 @@ async function refresh() {
   $("log").textContent = R.log.length ? R.log.join("\n") : "—";
 
   renderReadiness(s.readiness);
+  renderAutopilot(s.autopilot, s.inbox_counts);
+  renderInbox(s.inbox, s.inbox_counts);
 
   const D = s.farm.directions || {directions: [], advice: []};
   $("directions").innerHTML = (D.directions || []).map(d => `
@@ -625,14 +686,44 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self._json(collect_state())
             return
+        if path == "/healthz":
+            data = autopilot_mod.health()
+            self._json(data, 200 if data["status"] == "ok" else 503)
+            return
         if path == "/health":
             self._json({"ok": True})
+            return
+        if path == "/api/inbox":
+            self._json({"counts": inbox_mod.counts(), "items": inbox_mod.pending(limit=20)})
+            return
+        if path.startswith("/api/inbox/") and path.endswith("/text"):
+            try:
+                item_id = int(path.split("/")[3])
+            except (IndexError, ValueError):
+                self._json({"error": "bad id"}, 400)
+                return
+            self._send(200, inbox_mod.text(item_id).encode("utf-8"),
+                       "text/plain; charset=utf-8")
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+
+        if parsed.path == "/api/inbox/resolve":
+            body = self._read_json()
+            try:
+                item_id = int(body.get("id"))
+            except (TypeError, ValueError):
+                self._json({"error": "id required"}, 400)
+                return
+            status = str(body.get("status") or "published")
+            if status not in inbox_mod.STATUSES:
+                self._json({"error": f"status must be one of {inbox_mod.STATUSES}"}, 400)
+                return
+            self._json({"resolved": inbox_mod.resolve(item_id, status)})
+            return
 
         if parsed.path == "/api/run":
             body = self._read_json()
