@@ -8,12 +8,13 @@ available in your country.
 
 What is verified and what is not
 --------------------------------
-* Endpoints below come from the platform's own agent onboarding material
-  (AgentHansa documents them at ``/llms.txt`` and in its agent guide).
-* The sandbox this project was built in cannot reach ``agenthansa.com``, so the
-  worker is written to *degrade honestly*: without an API key it reports
-  "нужен ключ", with a key it uses the documented routes, and any HTTP failure
-  is surfaced instead of being papered over.
+* Endpoints and field names come from the platform's own open-source CLI
+  (``agent-hansa-mcp`` 0.10.0 from npm) and its agent guide, so the worker speaks
+  the real API instead of guessing. All HTTP goes through ``agent.hansa``.
+* This sandbox cannot reach the domain (GitHub/PyPI/npm only), so the worker is
+  written to *degrade honestly*: without a key it says "нужен ключ", and when the
+  network or the key fails the reason is surfaced instead of being papered over.
+  The loop itself runs where the internet is open (GitHub Actions or a laptop).
 * Numbers are the platform's own published ranges: quests $10-500, red packets
   $0.10-1.00, minimum payout 10 USDC, payouts in USDC on Base.
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from agent import hansa
 from agent.channels.base import Channel
 from agent.config import get_env
 from agent.http import build_session
@@ -36,13 +38,13 @@ from agent.ledger import Opportunity
 AGENTHANSA = {
     "name": "agenthansa",
     "title": "AgentHansa (квесты, USDC на Base)",
-    "base": "https://agenthansa.com/api",
+    "base": "https://www.agenthansa.com/api",
     "quests": "/alliance-war/quests",
     "earnings": "/agents/earnings",
     "submit_template": "/alliance-war/quests/{quest_id}/submit",
     "min_payout_usdc": 10.0,
     "reward_range": (10.0, 500.0),
-    "docs": "https://agenthansa.com/llms.txt",
+    "docs": "https://www.agenthansa.com/llms.txt",
 }
 
 #: A quest with a stated deadline sooner than this is probably not worth starting.
@@ -96,52 +98,45 @@ class AgentMarketplacesChannel(Channel):
         return opportunities[:limit]
 
     def _harvest_agenthansa(self, limit: int) -> List[Opportunity]:
-        key = self.api_key("agenthansa")
-        if not key:
+        """Забрать квесты площадки через настоящий клиент (agent/hansa.py).
+
+        Раньше здесь был свой набор угаданных полей и адрес без www: и то и
+        другое ломало разбор на живом API. Теперь контракт один — на клиент,
+        который вычитан из официального onboarding-материала площадки.
+        """
+        if not hansa.api_key():
             self.notes.append(
                 "AgentHansa: нужен ключ. Регистрация агента возвращает API-ключ "
                 f"({AGENTHANSA['docs']}), после этого добавьте AGENTHANSA_API_KEY в .env"
             )
             return []
 
-        base = (get_env("AGENTHANSA_BASE_URL", "") or AGENTHANSA["base"]).rstrip("/")
-        session = self._session("agenthansa")
+        client = hansa.Hansa(session=self._session("agenthansa"))
         try:
-            response = session.get(base + AGENTHANSA["quests"], timeout=25)
-        except Exception as exc:
-            self.last_error = f"AgentHansa недоступна из этой среды: {exc.__class__.__name__}"
+            quests = client.quests()
+        except hansa.HansaError as exc:
+            self.last_error = f"AgentHansa: {exc}"
             return []
 
-        if response.status_code == 401:
-            self.last_error = "AgentHansa: ключ не принят (401). Проверьте AGENTHANSA_API_KEY."
-            return []
-        if response.status_code != 200:
-            self.last_error = f"AgentHansa HTTP {response.status_code}"
-            return []
-
-        payload = response.json()
-        quests = payload.get("quests") if isinstance(payload, dict) else payload
-        if not isinstance(quests, list):
-            self.last_error = "AgentHansa: неожиданный формат ответа"
+        if not quests:
+            self.notes.append("AgentHansa: открытых квестов нет — заходите позже")
             return []
 
         now = datetime.now(timezone.utc)
         items: List[Opportunity] = []
         for quest in quests[:limit]:
-            if not isinstance(quest, dict):
-                continue
-            reward = _number(quest.get("reward_amount") or quest.get("reward"))
+            reward = quest.reward_usd
             if reward <= 0:
                 continue
-            title = str(quest.get("title") or "Квест без названия")
-            quest_id = str(quest.get("id") or quest.get("quest_id") or title[:40])
-            submissions = int(_number(quest.get("submission_count") or quest.get("submissions")))
-            cap = int(_number(quest.get("submission_cap") or quest.get("cap")))
+            title = quest.title
+            quest_id = quest.id or title[:40]
+            submissions, cap = quest.submissions, quest.cap
 
-            hours = _estimate_hours(quest, reward)
-            # Competition on these platforms is measured directly: submissions
-            # against the cap. 50/50 means the queue is full.
-            probability = 0.35
+            hours = _estimate_hours({"description": quest.description}, reward)
+            # Конкуренция на площадке измеряется напрямую: заявки против лимита.
+            # Награды разбирают три альянса, поэтому базовая вероятность ниже,
+            # чем у одиночного bounty: выигрывает один из многих.
+            probability = 0.30
             if cap:
                 probability *= max(0.05, 1.0 - submissions / cap)
             elif submissions:
@@ -150,7 +145,7 @@ class AgentMarketplacesChannel(Channel):
             ev_per_hour = (expected - hours * 5.0 * 0.15) / hours if hours else 0.0
 
             deadline_note = ""
-            hours_left = _hours_left(quest.get("deadline"), now)
+            hours_left = _hours_left(quest.deadline, now)
             if hours_left is not None:
                 deadline_note = f"; до дедлайна {hours_left:.0f}ч"
                 if hours_left < MIN_HOURS_LEFT:
@@ -169,7 +164,7 @@ class AgentMarketplacesChannel(Channel):
                     id=f"market:{AGENTHANSA['name']}:{quest_id}",
                     channel=self.name,
                     title=f"[AgentHansa] {title}",
-                    url=str(quest.get("url") or quest.get("link") or ""),
+                    url=quest.url,
                     repo=AGENTHANSA["name"],
                     reward_usd=reward,
                     reward_source="награда квеста (площадка)",
@@ -178,12 +173,11 @@ class AgentMarketplacesChannel(Channel):
                     payload={
                         "platform": AGENTHANSA["name"],
                         "quest_id": quest_id,
-                        "description": _short(quest.get("description"), 2000),
-                        "requirements": _short(quest.get("requirements"), 800),
-                        "proof_hint": _short(quest.get("proof_hint"), 400),
+                        "description": _short(quest.description, 2000),
+                        "requirements": _short(quest.requirements, 800),
                         "submissions": submissions,
                         "submission_cap": cap,
-                        "deadline": quest.get("deadline"),
+                        "deadline": quest.deadline,
                         "hours_left": hours_left,
                         "effort_hours": hours,
                         "probability": round(probability, 3),
@@ -191,11 +185,12 @@ class AgentMarketplacesChannel(Channel):
                         "expected_value_usd": round(expected, 2),
                         "payout_rail": "crypto_usdc",
                         "payout_note": (
-                            "Выплата в USDC на Base через кошелёк площадки; "
-                            "нужен кошелёк и привязка к аккаунту агента."
+                            "Выплата в USDC на Base по адресу из PAYOUT_WALLET: "
+                            "привязать его на площадке командой "
+                            "python -m agent.main площадка кошелёк"
                         ),
                         "docs": AGENTHANSA["docs"],
-                        "submit_route": base + AGENTHANSA["submit_template"].format(
+                        "submit_route": (hansa.base_url() + hansa.ROUTES["quest_submit"]).format(
                             quest_id=quest_id
                         ),
                         "verify_before_work": [

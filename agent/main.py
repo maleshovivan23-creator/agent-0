@@ -40,7 +40,7 @@ from agent import dossier as dossier_mod, followup as followup_mod
 from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
-from agent import eligibility, payouts, quests, wallet
+from agent import eligibility, hansa, payouts, quests, wallet
 from agent.config import get_env, load_environment, project_root
 from agent.farm import next_actions, overview, run_cycle
 from agent.ledger import (
@@ -1083,6 +1083,245 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hansa(args: argparse.Namespace) -> int:
+    """Площадка AgentHansa: статус, лента заданий, кошелёк и отправка работы.
+
+    Отправка работы (``отправить``) — единственное действие, которое выходит
+    наружу от имени человека, поэтому она требует флага ``--подтверждаю``.
+    Всё остальное безопасно: чтение ленты, отметка, привязка кошелька.
+    """
+    import json as _json
+
+    action = (args.action or "статус").strip().lower()
+    value = (args.value or "").strip()
+    aliases = {
+        "статус": "статус", "status": "статус", "me": "статус",
+        "лента": "лента", "feed": "лента", "inbox": "лента",
+        "квесты": "квесты", "quests": "квесты",
+        "квест": "квест", "quest": "квест",
+        "отметиться": "отметиться", "checkin": "отметиться",
+        "кошелёк": "кошелёк", "кошелек": "кошелёк", "wallet": "кошелёк",
+        "альянс": "альянс", "alliance": "альянс",
+        "регистрация": "регистрация", "register": "регистрация",
+        "отправить": "отправить", "submit": "отправить",
+        "сети": "сети", "probe": "сети", "проверка-сети": "сети",
+    }
+    action = aliases.get(action, action)
+
+    if action == "сети":
+        url = hansa.base_url() + hansa.ROUTES["me"]
+        try:
+            session = hansa.build_session("AGENT-0-agenthansa-probe/1.0",
+                                          {"Accept": "application/json"})
+            response = session.get(url, timeout=15)
+            print(f"Площадка отвечает: HTTP {response.status_code} — {hansa.base_url()}")
+            print(f"{DIM}Без ключа ответ 401 — это нормально: значит адрес живой "
+                  f"и ждёт AGENTHANSA_API_KEY.{RESET}")
+            return 0
+        except Exception as exc:
+            print(f"Площадка недоступна из этой среды: {exc.__class__.__name__}: {exc}")
+            print(f"{DIM}Так бывает в песочницах с белым списком хостов. Ключ и "
+                  f"работа переносятся туда, где сеть открыта: GitHub Actions "
+                  f"(.github/workflows/hansa.yml) или ваша машина.{RESET}")
+            return 2
+
+    if action == "регистрация":
+        name = args.name or "agent-0"
+        description = args.description or (
+            "Автономная ферма агента: аудит-контесты, bounty-задачи, поиск и "
+            "проверка конкуренции, планы работ и черновики текстов."
+        )
+        try:
+            payload = hansa.register(name, description)
+        except hansa.HansaError as exc:
+            print(f"Регистрация не прошла: {exc}")
+            return 2
+        key = str(payload.get("api_key"))
+        updates = {"AGENTHANSA_API_KEY": key}
+        if payload.get("id"):
+            updates["AGENTHANSA_AGENT_ID"] = str(payload["id"])
+        setupenv.update_env(updates)
+        os.environ.update(updates)
+        print(f"Агент зарегистрирован: {payload.get('name') or name}")
+        print(f"  Ключ сохранён в .env: {hansa._mask(key)} (показан полностью один раз — "
+              f"в файле он лежит открытым текстом)")
+        if payload.get("balance"):
+            print(f"  Приветственный баланс: ${payload['balance']}")
+        print(f"{DIM}Дальше: площадка кошелёк — привязать адрес, иначе выплата "
+              f"держится 3-7 дней{RESET}")
+        return 0
+
+    if not hansa.api_key():
+        print("Ключ площадки не задан: AGENTHANSA_API_KEY пуст.")
+        print("Регистрация (одна команда, ключ вернётся один раз):")
+        print("  python -m agent.main площадка регистрация --имя agent-0")
+        print(f"{DIM}Ключ хранится в .env (права 600) и не печатается. Без ключа "
+              f"площадка отвечает 401 на всё, кроме регистрации.{RESET}")
+        return 2
+
+    client = hansa.Hansa()
+    try:
+        if action == "статус":
+            me = client.me()
+            reputation = client.reputation()
+            points = client.points()
+            earnings = client.earnings()
+            payouts = client.payouts()
+            if args.json:
+                print(_json.dumps({
+                    "agent": {k: me.get(k) for k in
+                              ("name", "alliance", "reputation", "tier", "balance", "xp",
+                               "wallet_address", "fluxa_agent_id")},
+                    "reputation": reputation, "points": points,
+                    "earnings": earnings, "payouts": payouts,
+                }, ensure_ascii=False, indent=2, default=str))
+                return 0
+            print(paint(f"Агент {me.get('name', '—')} на площадке AgentHansa", BOLD))
+            tier = reputation.get("tier") or me.get("tier") or "—"
+            print(f"  Альянс: {me.get('alliance') or 'не выбран'} · репутация "
+                  f"{reputation.get('score', me.get('reputation', '—'))} ({tier}) · "
+                  f"множитель выплаты {reputation.get('payout_multiplier', '—')}")
+            print(f"  Баланс: ${me.get('balance', '0')} · XP {me.get('xp', '—')} · "
+                  f"очки {points.get('balance', points.get('points', '—'))}")
+            wallet = me.get("wallet_address") or me.get("fluxa_agent_id") or ""
+            print(f"  Кошелёк: {wallet or 'не привязан (выплата держится 3-7 дней)'}")
+            total = earnings.get("total_usd", earnings.get("total", 0))
+            print(f"  Заработано всего: ${total or 0} · выплат записей: {len(payouts)}")
+            return 0
+
+        if action == "лента":
+            inbox = client.inbox()
+            sections = {
+                "engagement": "задания от площадки",
+                "alliance_war_quests": "квесты альянсов",
+                "reddit_karma_quest": "кармический квест Reddit",
+                "personal": "личные задачи",
+                "side_quests": "мелкие задания",
+            }
+            if args.json:
+                print(_json.dumps(inbox, ensure_ascii=False, indent=2, default=str))
+                return 0
+            print(paint("Что площадка предлагает сейчас", BOLD))
+            total = 0
+            for key, title in sections.items():
+                rows = inbox.get(key)
+                if isinstance(rows, dict):
+                    rows = rows.get("items") or []
+                if not isinstance(rows, list) or not rows:
+                    continue
+                total += len(rows)
+                print(f"  {title}: {len(rows)}")
+                for row in rows[:5]:
+                    reward = row.get("reward_amount") or row.get("pay_usd") or row.get("reward")
+                    print(f"    · {str(row.get('title') or row.get('name') or '—')[:70]}"
+                          f"{f' — ${reward}' if reward else ''}")
+            print(f"{DIM}Всего позиций: {total}. Взять в работу: площадка квесты{RESET}")
+            return 0
+
+        if action == "квесты":
+            quests = client.quests()
+            if args.json:
+                print(_json.dumps([q.as_dict() for q in quests], ensure_ascii=False, indent=2))
+                return 0
+            if not quests:
+                print("Открытых квестов нет — площадка раздаёт их волнами, заходите позже.")
+                return 0
+            quests.sort(key=lambda q: q.reward_usd, reverse=True)
+            print(paint(f"Квесты площадки: {len(quests)}", BOLD))
+            for quest in quests[:15]:
+                deadline = f" · до {quest.deadline}" if quest.deadline else ""
+                print(f"  ${quest.reward_usd:>7,.0f}  {quest.title[:64]}{deadline}")
+                print(f"    {DIM}id {quest.id} · заявок {quest.submissions}"
+                      f"{f' из {quest.cap}' if quest.cap else ''}{RESET}")
+            print(f"{DIM}Подробно: площадка квест <id>. Отправить работу человеком: "
+                  f"площадка отправить <id> --файл <текст> --подтверждаю{RESET}")
+            return 0
+
+        if action == "квест":
+            if not value:
+                print("Укажите id квеста: площадка квест <id>")
+                return 2
+            quest = client.quest(value)
+            print(paint(quest.title, BOLD))
+            print(f"  Награда: ${quest.reward_usd:,.2f} · заявок {quest.submissions}"
+                  f"{f' из {quest.cap}' if quest.cap else ''} · дедлайн {quest.deadline or '—'}")
+            if quest.requirements:
+                print(f"  Требования: {quest.requirements[:600]}")
+            if quest.description:
+                print(f"  Описание: {quest.description[:1200]}")
+            return 0
+
+        if action == "отметиться":
+            result = client.checkin()
+            streak = result.get("streak", result.get("streak_days", "—"))
+            print(f"Отметка принята: +{result.get('xp', 10)} XP, серия {streak} дн., "
+                  f"начислено ${result.get('reward_usd', result.get('reward', 0))}")
+            return 0
+
+        if action == "кошелёк":
+            address = value or (get_env("PAYOUT_WALLET", "") or "").strip()
+            if not address:
+                print("Адрес не задан. Укажите: площадка кошелёк 0x…")
+                print(f"{DIM}Или сначала сохраните его вообще для всех каналов: "
+                      f"python -m agent.main кошелёк 0x… --save{RESET}")
+                return 2
+            info = wallet.classify(address)
+            if not info.ok:
+                print(f"Адрес не годен: {info.problem}")
+                print(f"{DIM}{info.advice}{RESET}")
+                return 2
+            result = client.bind_wallet(info.normalized)
+            print(f"Кошелёк привязан: {wallet.mask(info.normalized)}")
+            print(f"{DIM}С привязанным кошельком выплата приходит сразу, без задержки "
+                  f"3-7 дней. Ответ площадки: {str(result)[:200]}{RESET}")
+            return 0
+
+        if action == "альянс":
+            if not value:
+                me = client.me()
+                print(f"Текущий альянс: {me.get('alliance') or 'не выбран'}")
+                print("Сменить: площадка альянс red|blue|green")
+                return 0
+            result = client.choose_alliance(value)
+            print(f"Альянс: {result.get('alliance') or value}")
+            return 0
+
+        if action == "отправить":
+            if not value:
+                print("Укажите id квеста: площадка отправить <id> --файл <текст> --подтверждаю")
+                return 2
+            if not args.file:
+                print("Нужен текст работы: --файл <путь> (робот готовит его в отчётах/черновиках)")
+                return 2
+            path = project_root() / args.file
+            if not path.exists():
+                print(f"Файл не найден: {path}")
+                return 2
+            text = path.read_text(encoding="utf-8")
+            if not args.confirm:
+                print("Отправка работы — действие человека. Робот подготовил текст, "
+                      "проверьте его и повторите с флагом --подтверждаю.")
+                print(f"{DIM}Текст: {path} · квест {value} · доказательство "
+                      f"{args.proof or '—'}{RESET}")
+                return 2
+            result = client.submit_quest(value, text, args.proof, confirm=True)
+            print(f"Работа отправлена: {str(result)[:300]}")
+            return 0
+
+        print(f"Неизвестное действие «{action}». Доступно: статус, лента, квесты, квест, "
+              f"отметиться, кошелёк, альянс, отправить, сети, регистрация")
+        return 2
+    except hansa.ConfirmationRequired as exc:
+        print(f"Нужно подтверждение человека: {exc}")
+        return 2
+    except hansa.HansaError as exc:
+        print(f"Площадка отказала: {exc}")
+        return 2
+    except Exception as exc:
+        print(f"Связь с площадкой не удалась: {exc.__class__.__name__}: {exc}")
+        return 2
+
+
 def cmd_wallet(args: argparse.Namespace) -> int:
     """Проверить адрес кошелька и, если он верный, сохранить в .env.
 
@@ -1180,6 +1419,7 @@ ALIASES: Dict[str, str] = {
     "правила": "policy",
     "кто-я": "whoami",
     "кошелёк": "wallet",
+    "площадка": "hansa",
     "кошелек": "wallet",
     "настройка": "setup",
     "контесты": "contests",
@@ -1281,6 +1521,18 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ledger", help="бухгалтерия")
     sub.add_parser("policy", help="что разрешено, что запрещено")
     sub.add_parser("whoami", help="техническая сводка")
+
+    hansa_cmd = sub.add_parser("hansa", help="площадка агентов AgentHansa: квесты и выплаты")
+    hansa_cmd.add_argument("action", nargs="?", default="статус",
+                           help="статус | лента | квесты | квест | отметиться | кошелёк | альянс | отправить | сети | регистрация")
+    hansa_cmd.add_argument("value", nargs="?", default="", help="id квеста, адрес или альянс")
+    hansa_cmd.add_argument("--имя", dest="name", default="", help="имя агента при регистрации")
+    hansa_cmd.add_argument("--описание", dest="description", default="", help="чем занимается агент")
+    hansa_cmd.add_argument("--файл", dest="file", default="", help="текст работы для отправки")
+    hansa_cmd.add_argument("--доказательство", dest="proof", default="", help="ссылка на доказательство")
+    hansa_cmd.add_argument("--подтверждаю", dest="confirm", action="store_true",
+                           help="подтверждение человека на отправку работы")
+    hansa_cmd.add_argument("--json", action="store_true")
 
     wallet_cmd = sub.add_parser("wallet", help="проверить адрес кошелька для выплат")
     wallet_cmd.add_argument("address", nargs="?", default="")
@@ -1388,6 +1640,7 @@ HANDLERS = {
     "policy": cmd_policy,
     "whoami": cmd_whoami,
     "wallet": cmd_wallet,
+    "hansa": cmd_hansa,
     "setup": cmd_setup,
     "contests": cmd_contests,
     "dossier": cmd_dossier,

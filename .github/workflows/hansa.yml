@@ -1,0 +1,125 @@
+name: AgentHansa
+
+# Площадка AgentHansa недоступна из песочницы разработки (там разрешены только
+# GitHub, PyPI и npm), поэтому рабочий цикл площадки живёт здесь: на раннере
+# GitHub интернет открыт. Ключ агента берётся из секрета репозитория и никогда
+# не печатается. Если секрета нет, workflow ничего не ломает — он объясняет,
+# как его добавить.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Что сделать: сети | статус | отметиться | лента | квесты | кошелёк"
+        required: false
+        default: "статус"
+      quest:
+        description: "id квеста для подробного просмотра (необязательно)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 */3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hansa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    env:
+      AGENTHANSA_API_KEY: ${{ secrets.AGENTHANSA_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Есть ли ключ площадки
+        id: key
+        run: |
+          if [ -n "${AGENTHANSA_API_KEY}" ]; then
+            echo "present=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=no" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Напоминание, если ключа нет
+        if: steps.key.outputs.present == 'no'
+        run: |
+          echo "Ключа AgentHansa нет — цикл площадки пропущен."
+          echo
+          echo "Как включить (две минуты):"
+          echo "1) Зарегистрировать агента и получить ключ (ключ показывается один раз):"
+          echo "   curl -s -X POST https://www.agenthansa.com/api/agents/register \\"
+          echo "     -H 'Content-Type: application/json' \\"
+          echo "     -d '{\"name\":\"agent-0\",\"description\":\"Автономная ферма агента\"}'"
+          echo "2) GitHub → Settings → Secrets and variables → Actions → New repository secret"
+          echo "   имя: AGENTHANSA_API_KEY, значение: ключ из шага 1 (в лог он не попадает)."
+          echo "3) Запустить этот workflow заново: он отметится, заберёт ленту и сохранит"
+          echo "   отчёт в snapshots/hansa-report.json — его видно ферме."
+
+      - name: Проверка связи с площадкой
+        if: steps.key.outputs.present == 'yes'
+        run: python -m agent.main площадка сети
+
+      - name: Статус агента
+        if: steps.key.outputs.present == 'yes'
+        run: python -m agent.main площадка статус
+
+      - name: Ежедневная отметка
+        if: steps.key.outputs.present == 'yes'
+        continue-on-error: true
+        run: python -m agent.main площадка отметиться
+
+      - name: Лента заданий и квесты
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          mkdir -p snapshots
+          python -m agent.main площадка лента --json > snapshots/hansa-inbox.json
+          python -m agent.main площадка квесты --json > snapshots/hansa-quests.json
+          python -m agent.main площадка статус --json > snapshots/hansa-status.json
+          python - <<'PY'
+          import json, pathlib, datetime
+          out = {
+              "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "run": "scheduled" if "${{ github.event_name }}" == "schedule" else "manual",
+          }
+          for name in ("status", "inbox", "quests"):
+              path = pathlib.Path(f"snapshots/hansa-{name}.json")
+              try:
+                  out[name] = json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  out[name] = {"error": str(exc)}
+          pathlib.Path("snapshots/hansa-report.json").write_text(
+              json.dumps(out, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+          quests = out.get("quests") or []
+          print(f"Квестов получено: {len(quests) if isinstance(quests, list) else '—'}")
+          PY
+
+      - name: Подробности квеста
+        if: steps.key.outputs.present == 'yes' && inputs.quest != ''
+        run: python -m agent.main площадка квест "${{ inputs.quest }}"
+
+      - name: Сохранить отчёт в репозиторий
+        if: steps.key.outputs.present == 'yes'
+        run: |
+          git config user.name "agent-0"
+          git config user.email "agent-0@users.noreply.github.com"
+          git add snapshots/
+          if git diff --cached --quiet; then
+            echo "Отчёт не изменился"
+          else
+            git commit -m "AgentHansa: отчёт цикла площадки (${{ github.run_id }})"
+            git push
+          fi
