@@ -1255,9 +1255,28 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         row["rationale"] = opportunity.rationale
         rows.append(row)
 
+    # Описание задачи (условия, критерии приёмки) живёт только на самой странице,
+    # поэтому его снимает раннер: из песочницы домен площадки закрыт. Читаем верх
+    # списка — описание стоит одного запроса, а дешёвые задачи всё равно не в работе.
+    detailed = 0
+    detail_limit = int(getattr(args, "detail", 0) or 0)
+    if detail_limit > 0 and rows and channel.name == "taskmarket":
+        from agent import task_detail
+
+        reader = getattr(channel, "fetch_detail", None)
+        fetch = reader if callable(reader) else None
+        if fetch is None:
+            from agent.channels.taskmarket import fetch_detail as fetch
+        for row in task_detail.pick_for_detailing(rows, detail_limit):
+            text = fetch(str(row.get("id") or ""))
+            if task_detail.apply_description(rows, str(row.get("id") or ""), text):
+                detailed += 1
+
     payload = {
         "channel": channel.name,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "detail_requested": detail_limit,
+        "detail_found": detailed,
         "count": len(rows),
         "error": channel.last_error,
         "tasks": rows,
@@ -1294,6 +1313,13 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         print(paint(f"{title}: задач не найдено", YELLOW))
         if channel.last_error:
             print(f"  причина: {channel.last_error}")
+    if detail_limit:
+        # Диагностика для раннера: «0 из 5» означает, что разметка площадки
+        # изменилась, и это надо чинить, а не считать задачей без условий.
+        note = (f"{paint('внимание', YELLOW)}: описаний 0 из {detail_limit} — "
+                f"разметка страницы изменилась") if detailed == 0 else \
+               f"описаний снято: {detailed} из {detail_limit}"
+        print(f"  {note}")
     print(f"{DIM}Отчёт лежит в репозитории: ферма прочитает его там, где домен площадки закрыт.{RESET}")
     return 0 if rows else 1
 
@@ -1803,6 +1829,8 @@ def build_parser() -> argparse.ArgumentParser:
     snap.add_argument("channel", help="канал: taskmarket, agent_marketplaces, github_bounties")
     snap.add_argument("--limit", type=int, default=50, help="сколько задач включать в отчёт")
     snap.add_argument("--json", action="store_true", help="вывести отчёт в stdout")
+    snap.add_argument("--detail", type=int, default=0,
+                      help="снять описание у N самых дорогих задач (нужна сеть раннера)")
 
     multi = sub.add_parser(
         "multitask",

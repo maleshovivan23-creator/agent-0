@@ -34,16 +34,8 @@ def apply_operator_defaults() -> None:
     файл только заполняет то, чего нет. Пустая строка считается отсутствием:
     ``PAYOUT_WALLET=`` в ``.env`` ничего не значит, и адрес из файла нужен.
     """
-    path = project_root() / OPERATOR_REL
-    if not path.exists():
-        return
-    try:
-        import yaml
-
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return
-    if not isinstance(raw, dict):
+    raw = _operator_data()
+    if not raw:
         return
     for key, env_name in OPERATOR_ENV_KEYS.items():
         if (os.getenv(env_name) or "").strip():
@@ -51,6 +43,32 @@ def apply_operator_defaults() -> None:
         value = str(raw.get(key) or "").strip()
         if value:
             os.environ[env_name] = value
+
+
+def _operator_data() -> dict:
+    path = project_root() / OPERATOR_REL
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def operator_value(env_name: str) -> str:
+    """Значение настройки: окружение сильнее файла, файл — сильнее пустоты.
+
+    Нужно там, где модуль работает сам по себе — например, черновик работы
+    печатает кошелёк, не запуская полную загрузку окружения.
+    """
+    value = (os.getenv(env_name) or "").strip()
+    if value:
+        return value
+    key = next((k for k, name in OPERATOR_ENV_KEYS.items() if name == env_name), "")
+    return str(_operator_data().get(key) or "").strip()
 
 
 def load_environment() -> None:

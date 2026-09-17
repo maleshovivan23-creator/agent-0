@@ -75,4 +75,16 @@ jobs:
             000) echo "::warning::Taskmarket недоступен с раннера (код 000)";;
             *) echo "::warning::Taskmarket ответил кодом $code";;
           esac
-          python -m agent.main снапшот taskmarket --limit 20 || true
+          python -m agent.main снапшот taskmarket --limit 20 --detail 2 || true
+          python - <<'PY' || true
+          import json, pathlib
+          path = pathlib.Path("snapshots/taskmarket-report.json")
+          if path.exists():
+              data = json.loads(path.read_text(encoding="utf-8"))
+              tasks = data.get("tasks", [])
+              got = sum(1 for row in tasks if row.get("description"))
+              print(f"::notice::Taskmarket: задач {len(tasks)}, с описанием {got} "
+                    f"(просили {data.get('detail_requested', 0)})")
+              if data.get("detail_requested") and not got:
+                  print("::warning::разбор страницы задачи перестал находить описание")
+          PY

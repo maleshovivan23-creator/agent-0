@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.channels.base import Channel
-from agent.config import get_env, get_float, project_root
+from agent.config import get_float, operator_value, project_root
 from agent.http import build_session
 from agent.ledger import Opportunity
 from agent.scoring import looks_like_junk, score_opportunity
@@ -190,9 +190,9 @@ def draft_markdown(opportunity: Dict[str, Any]) -> str:
     identifier = str(opportunity.get("id") or "")
     url = str(opportunity.get("url") or payload.get("url") or "")
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    wallet = (get_env("TASKMARKET_WALLET", "") or get_env("PAYOUT_WALLET", "") or "").strip()
+    wallet = operator_value("TASKMARKET_WALLET") or operator_value("PAYOUT_WALLET")
 
-    lines = [
+    lines: List[str] = [
         f"# Черновик работы: {opportunity.get('title', 'задача')}",
         "",
         f"- ID: `{identifier}`",
@@ -206,6 +206,20 @@ def draft_markdown(opportunity: Dict[str, Any]) -> str:
         + (" — отправка подписывается им же" if wallet else ""),
         f"- Подготовлено: {generated}",
         "",
+    ]
+    description = str(payload.get("description") or "").strip()
+    if description:
+        # Описание снято с самой страницы задачи: это условия, а не пересказ.
+        lines += [
+            "## Что просит площадка (снято со страницы задачи)",
+            "",
+            description,
+            "",
+            "Снимок страницы, а не гарантия: перед отправкой сверьте условия и "
+            "срок на площадке.",
+            "",
+        ]
+    lines += [
         "## Прочитать перед работой (этого робот знать не может)",
         "",
         "- Критерии приёмки: что именно считается результатом и в каком виде его ждут",
@@ -249,6 +263,34 @@ def save_draft(opportunity: Dict[str, Any]) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(draft_markdown(opportunity), encoding="utf-8")
     return target
+
+
+def fetch_detail(task_id: str, session: Any = None) -> str:
+    """Описание задачи со страницы. Пустая строка — сети нет или разметка новая.
+
+    Отдельный запрос на задачу: в выдаче описания нет, а оно и есть условия
+    работы. Ошибку не поднимаем наверх — без описания черновик работает как
+    раньше, а падать из-за одной страницы отчёту незачем.
+    """
+    from agent import task_detail
+
+    if not task_id:
+        return ""
+    own = session is None
+    session = session or build_session("AGENT-0-taskmarket/1.0 (open tasks, read only)")
+    try:
+        response = session.get(task_detail.task_url(task_id), timeout=25)
+        if getattr(response, "status_code", 200) != 200:
+            return ""
+        return task_detail.extract_description(response.text)
+    except Exception:
+        return ""
+    finally:
+        if own:
+            try:
+                session.close()
+            except Exception:
+                pass
 
 
 class TaskMarketChannel(Channel):

@@ -110,8 +110,9 @@ jobs:
       - name: Отчёт второй площадки (Taskmarket)
         continue-on-error: true
         run: |
-          python -m agent.main снапшот taskmarket --limit 60
+          python -m agent.main снапшот taskmarket --limit 60 --detail 5
           echo "файл: snapshots/taskmarket-report.json (если задач нет, прежний отчёт не затирается)"
+          echo "у пяти самых дорогих задач снято описание — условия попадут в черновик работы"
 
       - name: Подробности квеста
         if: steps.key.outputs.present == 'yes' && inputs.quest != ''

@@ -612,3 +612,25 @@ def test_dashboard_counts_tasks_that_close_today(monkeypatch, tmp_path) -> None:
     assert state["task_count"] == 3
     assert state["free_slots"] == 2, "без толпы — там, где прислано не больше двух работ"
     assert state["expiring_soon"] == 1, "сутки — это hours_left 0 < x <= 24"
+
+
+def test_conditions_from_the_report_reach_the_draft(tmp_path: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    """Цепочка целиком: раннер снял описание → отчёт → черновик человека."""
+    from agent import snapshots
+    from agent.channels.taskmarket import draft_markdown
+
+    snapshot_file(tmp_path, 1.0, [{
+        "id": "0xrich", "title": "Дорогая задача", "reward_usd": 199.0, "submissions": 1,
+        "hours_left": 40.0, "url": "https://taskmarket.dev/tasks/0xrich",
+        "description": "Work deadline is 7 October 2026, UTC.",
+    }])
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+
+    found = OfflineTaskMarket().harvest()
+    task = next(opp for opp in found if opp.payload.get("id") == "0xrich")
+    assert task.payload["description"].startswith("Work deadline")
+
+    draft = draft_markdown({"id": task.id, "title": task.title,
+                            "reward_usd": task.reward_usd, "payload": task.payload})
+    assert "Work deadline is 7 October 2026" in draft
