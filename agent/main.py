@@ -2,6 +2,7 @@
 
     python -m agent.main проверка               # что нужно, чтобы начать зарабатывать
     python -m agent.main автопилот              # робот: сбор, триаж, черновики, слежение
+    python -m agent.main потоки                 # многозадачный режим: несколько заказов сразу
     python -m agent.main состояние              # состояние фермы
     python -m agent.main дальше                 # что делать прямо сейчас
     python -m agent.main цикл                   # разовый проход по воркерам
@@ -36,6 +37,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent import autopilot as autopilot_mod
+from agent import multitask as multitask_mod
 from agent import dossier as dossier_mod, followup as followup_mod
 from agent import learning, setupenv, watchdog
 from agent import doctor as doctor_mod
@@ -1031,6 +1033,53 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_multitask(args: argparse.Namespace) -> int:
+    """Многозадачный режим: несколько заказов сразу, свои берёт сам."""
+    if args.status:
+        state = multitask_mod.state()
+        print(paint("Многозадачный режим:", BOLD),
+              f"одновременно до {state['parallel']} заказов")
+        print(f"  Ждут человека: {state['waiting_for_human']} готовых артефактов"
+              + (f" ({', '.join(state['kinds'])})" if state["kinds"] else ""))
+        print("  Посмотреть: python -m agent.main входящие")
+        return 0
+
+    plan = multitask_mod.plan(limit=args.limit,
+                              channels=[args.channel] if args.channel else None)
+    print(paint("План на проход:", BOLD))
+    if not plan["items"]:
+        print(paint(f"  Робот ничего не берёт: выше порога "
+                    f"{money(plan['floor'])}/час из {plan['queued']} задач проходят "
+                    f"{plan['above_floor']}.", YELLOW))
+        print(f"  {DIM}Свежие задачи разбирают в первые часы — автопилот соберёт их сам.{RESET}")
+        return 0
+    for item in plan["items"]:
+        print(f"  {paint(item['title'][:58], BOLD)} — {money(item['reward_usd'])}, "
+              f"EV/час ~{money(item['ev_per_hour'])}")
+        print(f"  {DIM}{item['id']} · {item['channel']} · {item['reason']}{RESET}")
+    if plan["left_to_human"]:
+        print(f"  {DIM}Остаётся человеку: "
+              f"{', '.join(item['id'] for item in plan['left_to_human'][:3])}{RESET}")
+    print()
+
+    if args.plan:
+        return 0
+
+    outcome = multitask_mod.run(plan["items"], parallel=args.parallel)
+    print(paint(f"Проход завершён за {outcome['seconds']:.1f} с "
+                f"(одновременно {outcome['parallel']}):", BOLD),
+          f"готово {outcome['ok']}, ошибок {outcome['failed']}")
+    for result in outcome["results"]:
+        mark = "готово" if result["ok"] else paint("ошибка", RED)
+        detail = result["path"] or result["note"] or result["error"]
+        print(f"  {mark}: {result['id']} → {detail} ({result['seconds']} с)")
+    print()
+    print(f"{DIM}Журнал: {outcome.get('journal', '—')}{RESET}")
+    print(f"{DIM}Отправку делает человек: python -m agent.main входящие → "
+          f"площадка отправить <id> --подтверждаю{RESET}")
+    return 0 if outcome["failed"] == 0 else 1
+
+
 def cmd_autopilot(args: argparse.Namespace) -> int:
     if args.status:
         data = autopilot_mod.status()
@@ -1498,6 +1547,8 @@ ALIASES: Dict[str, str] = {
     "дозор": "watchdog",
     "обучение": "learning",
     "автопилот": "autopilot",
+    "многозадачность": "multitask",
+    "потоки": "multitask",
     "входящие": "inbox",
     "входящие-отправлено": "inbox-done",
     "входящие-пропустить": "inbox-skip",
@@ -1642,6 +1693,16 @@ def build_parser() -> argparse.ArgumentParser:
     setup_cmd.add_argument("--show", action="store_true",
                            help="показать текущие значения маской")
 
+    multi = sub.add_parser(
+        "multitask",
+        help="многозадачный режим: несколько заказов сразу",
+    )
+    multi.add_argument("--limit", type=int, default=4, help="сколько заказов брать за проход")
+    multi.add_argument("--parallel", type=int, default=None, help="сколько вести одновременно")
+    multi.add_argument("--channel", default=None, help="только этот канал")
+    multi.add_argument("--plan", action="store_true", help="показать план без запуска")
+    multi.add_argument("--status", action="store_true", help="состояние без запуска")
+
     auto = sub.add_parser("autopilot", help="автономный режим: работает без вас")
     auto.add_argument("--once", action="store_true", help="один проход и выход")
     auto.add_argument("--ticks", type=int, default=None, help="ограничить число проходов")
@@ -1718,6 +1779,7 @@ HANDLERS = {
     "watchdog": cmd_watchdog,
     "learning": cmd_learning,
     "autopilot": cmd_autopilot,
+    "multitask": cmd_multitask,
     "inbox": cmd_inbox,
     "inbox-done": lambda args: cmd_inbox_resolve(args, "published"),
     "inbox-skip": lambda args: cmd_inbox_resolve(args, "skipped"),

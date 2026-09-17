@@ -433,6 +433,10 @@ def run(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Run the autopilot until stopped, the tick budget is spent, or Ctrl+C."""
+    # Отметка о запуске процесса: по ней дозор понимает, что код в дереве
+    # изменился уже после старта и работающий автопилот крутит старую версию.
+    set_state("autopilot.process_started_at",
+              datetime.now(timezone.utc).isoformat(timespec="seconds"))
     count = 0
     while True:
         if not enabled():

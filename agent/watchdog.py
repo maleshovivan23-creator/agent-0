@@ -16,11 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 from agent import inbox, learning
 from agent.config import get_env, get_float, load_environment, project_root
-from agent.ledger import all_state, connect
+from agent.ledger import all_state, connect, get_state
 
 #: Сколько часов готовый текст может ждать, прежде чем робот начнёт напоминать.
 DEFAULT_NAG_HOURS = 12.0
@@ -237,11 +238,67 @@ def check_hansa_report() -> Optional[Problem]:
     return None
 
 
+def _newest_source_mtime(root: Optional[Path] = None) -> Optional[float]:
+    """Самое позднее время правки среди файлов агента."""
+    base = (root or project_root()) / "agent"
+    newest: Optional[float] = None
+    for path in base.rglob("*.py"):
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            continue
+        newest = stamp if newest is None else max(newest, stamp)
+    return newest
+
+
+def _hours_between(mtime: float) -> float:
+    """Сколько часов назад файл был изменён (по времени изменения)."""
+    moment = datetime.fromtimestamp(mtime, tz=timezone.utc)
+    return (datetime.now(timezone.utc) - moment).total_seconds() / 3600.0
+
+
+def check_stale_code(newest: Optional[Callable[[], Optional[float]]] = None) -> Optional[Problem]:
+    """Предупредить, что работающий процесс остался на старом коде.
+
+    Python читает модули один раз, поэтому правки в дереве не доходят до уже
+    запущенного автопилота: он продолжает писать результаты старой версией и
+    затирает то, что успела сделать новая. Так и случилось с оценкой контеста —
+    новые данные были перезаписаны старым процессом.
+    """
+    stamp = get_state("autopilot.process_started_at", "")
+    if not stamp:
+        return None
+    started = _hours_since(str(stamp))
+    if started is None:
+        return None
+
+    probe = newest or _newest_source_mtime
+    try:
+        newest_stamp = probe()
+    except Exception:
+        return None
+    if newest_stamp is None:
+        return None
+
+    age_hours = max(0.0, started - _hours_between(newest_stamp))
+    if age_hours <= 0:
+        return None
+    return Problem(
+        "stale_code",
+        "Автопилот работает на старом коде",
+        f"код в дереве менялся уже после запуска ({age_hours:.1f} ч назад) — "
+        "процесс держит прежнюю версию в памяти и перезаписывает новые результаты",
+        advice="перезапустить робота: остановить автопилот и выполнить "
+               "python -m agent.main автопилот (дозор --json покажет эту же запись)",
+    )
+
+
 def inspect(nag_hours: Optional[float] = None) -> List[Problem]:
     """Полный осмотр. Ни один сбой проверки не должен ломать осмотр."""
     load_environment()
     problems: List[Problem] = []
-    for checker in (check_heartbeat, check_quota, check_missing_setup, check_hansa_report):
+    for checker in (check_heartbeat, check_quota, check_missing_setup,
+                    check_hansa_report, check_stale_code):
         try:
             result = checker()
         except Exception:

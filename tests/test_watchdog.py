@@ -100,3 +100,49 @@ def test_clean_state_reports_ok() -> None:
     set_state("autopilot.last_tick", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     assert watchdog.state()["status"] == "ok"
     assert watchdog.nudge_lines() == []
+
+
+# --- работающий процесс на старом коде ------------------------------------------
+
+def hours_ago(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def test_stale_code_is_flagged_when_the_tree_changed_after_start(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Python держит модули в памяти: правки в дереве до процесса не доходят."""
+    set_state("autopilot.process_started_at", hours_ago(3.0))
+    problem = watchdog.check_stale_code(newest=lambda: datetime.now(timezone.utc).timestamp() - 3600)
+    assert problem is not None
+    assert problem.key == "stale_code"
+    assert "перезапустить" in problem.advice
+
+
+def test_fresh_process_is_not_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_state("autopilot.process_started_at", hours_ago(0.1))
+    assert watchdog.check_stale_code(
+        newest=lambda: datetime.now(timezone.utc).timestamp() - 3600) is None
+
+
+def test_code_changed_before_start_is_not_flagged() -> None:
+    set_state("autopilot.process_started_at", hours_ago(1.0))
+    assert watchdog.check_stale_code(
+        newest=lambda: datetime.now(timezone.utc).timestamp() - 3 * 3600) is None
+
+
+def test_no_marker_means_no_claim() -> None:
+    """Пока процесса не было, предупреждать не о чем — не выдумываем проблему."""
+    assert watchdog.check_stale_code(newest=lambda: 0.0) is None
+
+
+def test_newest_source_mtime_reads_the_agent_tree(tmp_path: Path) -> None:
+    import os
+
+    (tmp_path / "agent").mkdir()
+    old = tmp_path / "agent" / "old.py"
+    new = tmp_path / "agent" / "new.py"
+    old.write_text("", encoding="utf-8")
+    new.write_text("", encoding="utf-8")
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    assert watchdog._newest_source_mtime(tmp_path) == 2000.0
