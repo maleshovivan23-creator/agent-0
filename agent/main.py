@@ -143,8 +143,16 @@ def cmd_next(args: argparse.Namespace) -> int:
         print(f"   {DIM}{item['why'][:150]}{RESET}")
         if item["url"]:
             print(f"   {item['url']}")
-        print(f"   {DIM}первый шаг: python -m agent.main досье {item['id']} "
-              f"→ затем план {item['id']}{RESET}")
+        # Шаги берём из расчёта (farm.next_actions), а не пишем текстом вручную:
+        # раньше здесь были жёстко вписаны «досье → план», поэтому для квестов
+        # площадки человек получал команды от другого канала, а свои не видел.
+        steps = item.get("next") or []
+        if steps:
+            print(f"   {DIM}первый шаг: {steps[0]}{RESET}")
+            rest = steps[1:]
+            if rest:
+                tail = " → ".join(rest)
+                print(f"   {DIM}дальше: {tail[:230]}{'…' if len(tail) > 230 else ''}{RESET}")
         print()
     return 0
 
@@ -863,12 +871,18 @@ def cmd_dossier(args: argparse.Namespace) -> int:
     payload = json.loads(opportunity["payload"] or "{}")
     opportunity["payload"] = payload
 
-    print(paint("Собираю досье по задаче (публичный API GitHub)...", DIM))
+    is_quest = args.opportunity_id.startswith("market:") or (
+        opportunity.get("channel") == "agent_marketplaces"
+    )
+    if is_quest:
+        print(paint("Собираю досье по квесту площадки (без сети, из данных очереди)...", DIM))
+    else:
+        print(paint("Собираю досье по задаче (публичный API GitHub)...", DIM))
     card, path = dossier_mod.save(opportunity)
     print()
     print(card.to_markdown())
     print(paint(f"Сохранено: {path.relative_to(project_root())}", DIM))
-    if not card.tree_available:
+    if not card.tree_available and not is_quest:
         print(paint("Дерево файлов недоступно — проверьте токен: python -m agent.main проверка",
                     YELLOW))
     return 0

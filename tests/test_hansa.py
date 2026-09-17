@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -374,3 +375,309 @@ def test_channel_surfaces_platform_errors(monkeypatch: pytest.MonkeyPatch) -> No
     channel = AgentMarketplacesChannel()
     assert channel.harvest() == []
     assert "401" in channel.last_error
+
+
+# --- отчёт из GitHub Actions: запасной источник квестов ----------------------
+
+def write_snapshot(tmp_path: Path, generated_at: str, quests: List[Dict[str, Any]]) -> None:
+    import json
+
+    (tmp_path / "snapshots").mkdir(exist_ok=True)
+    (tmp_path / "snapshots" / "hansa-report.json").write_text(
+        json.dumps({"generated_at": generated_at, "status": {}, "quests": quests},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def recent_stamp(hours: float = 0.5) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def test_snapshot_is_read_with_age_and_quests(tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    write_snapshot(tmp_path, recent_stamp(2.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+
+    snapshot = hansa.read_snapshot()
+    assert snapshot.usable and not snapshot.problem
+    assert len(snapshot.quests) == 1
+    assert snapshot.quests[0].reward_usd == 120.0
+    assert snapshot.age_hours == pytest.approx(2.0, abs=0.2)
+    assert not snapshot.stale
+    assert "GitHub Actions" in snapshot.note()
+
+
+def test_snapshot_marks_free_quests_and_broken_files(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    assert "включите цикл" in hansa.read_snapshot().problem
+
+    write_snapshot(tmp_path, recent_stamp(), [{"id": "x", "title": "Пусто", "reward": 0}])
+    assert not hansa.read_snapshot().usable, "квест без награды не работа"
+
+    (tmp_path / "snapshots" / "hansa-report.json").write_text("{битый json", encoding="utf-8")
+    assert "не читается" in hansa.read_snapshot().problem
+
+
+def test_old_snapshot_is_flagged_as_stale(tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    write_snapshot(tmp_path, recent_stamp(40.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    snapshot = hansa.read_snapshot()
+    assert snapshot.stale
+    assert "устарел" in snapshot.note()
+
+
+def test_channel_uses_snapshot_when_the_network_is_closed(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Главный сценарий: домен площадки из песочницы закрыт, отчёт уже есть."""
+    write_snapshot(tmp_path, recent_stamp(1.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    monkeypatch.delenv("AGENTHANSA_API_KEY", raising=False)
+
+    channel = AgentMarketplacesChannel()
+    items = channel.harvest()
+    assert items, channel.last_error or channel.notes
+    item = items[0]
+    assert item.id == "market:agenthansa:q-77"
+    assert item.payload["source"] == "snapshot"
+    assert any("GitHub Actions" in note for note in channel.notes)
+    assert any("откройте квест на площадке" in step for step in item.payload["verify_before_work"])
+
+
+def test_channel_falls_back_to_snapshot_when_the_api_fails(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_snapshot(tmp_path, recent_stamp(3.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    monkeypatch.setenv("AGENTHANSA_API_KEY", "tabb_key")
+    monkeypatch.setattr(hansa, "api_key", lambda: "tabb_key")
+    monkeypatch.setattr(hansa, "build_session",
+                        lambda *a, **k: FakeSession([FakeResponse({"error": "boom"},
+                                                                  status_code=500)]))
+
+    channel = AgentMarketplacesChannel()
+    items = channel.harvest()
+    assert items, "отчёт должен заменять живой ответ"
+    assert channel.last_error, "причина сбоя видна в дозоре"
+    assert items[0].payload["source"] == "snapshot"
+
+
+def test_live_api_wins_over_the_snapshot(tmp_path: Path,
+                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    write_snapshot(tmp_path, recent_stamp(1.0), [{"id": "старый", "title": "из отчёта",
+                                                  "reward": 5}])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(hansa, "api_key", lambda: "tabb_key")
+    monkeypatch.setattr(hansa, "build_session",
+                        lambda *a, **k: FakeSession([FakeResponse({"quests": [QUEST_JSON]})]))
+
+    items = AgentMarketplacesChannel().harvest()
+    assert [item.payload["quest_id"] for item in items] == ["q-77"]
+    assert items[0].payload["source"] == "live"
+
+
+# --- шаги для человека: у квестов площадки свой маршрут ----------------------
+
+def test_next_actions_route_quests_to_the_platform_commands(tmp_path: Path,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """Раньше всем предлагалось «досье → план», для квеста это неверный путь."""
+    from agent import farm
+    from agent.ledger import Opportunity, set_status, upsert_opportunities
+
+    upsert_opportunities([Opportunity(
+        id="market:agenthansa:q77", channel="agent_marketplaces",
+        title="[AgentHansa] Обзор", reward_usd=120.0, repo="agenthansa",
+        payload={"quest_id": "q77", "ev_per_hour": 18.0, "effort_hours": 4.0,
+                 "source": "snapshot", "snapshot_age_hours": 2.0},
+    )])
+    set_status("market:agenthansa:q77", "queued")
+
+    actions = farm.next_actions(limit=3)
+    quest = [item for item in actions if item["id"] == "market:agenthansa:q77"][0]
+    steps = " ".join(quest["next"])
+    assert "площадка квест q77" in steps
+    assert "черновик market:agenthansa:q77" in steps
+    assert "отправить q77" in steps and "--подтверждаю" in steps
+    assert "досье market:agenthansa:q77" not in steps
+
+
+def test_next_actions_keep_the_github_route_for_bounty(tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import farm
+    from agent.ledger import Opportunity, set_status, upsert_opportunities
+
+    upsert_opportunities([Opportunity(
+        id="github:acme/parser#7", channel="github_bounties", title="Fix",
+        repo="acme/parser", reward_usd=200.0,
+        payload={"query": "label:bounty", "ev_per_hour": 25.0, "effort_hours": 4.0},
+    )])
+    set_status("github:acme/parser#7", "queued")
+
+    quest = [item for item in farm.next_actions(limit=3)
+             if item["id"] == "github:acme/parser#7"][0]
+    steps = " ".join(quest["next"])
+    assert "досье github:acme/parser#7" in steps and "план github:acme/parser#7" in steps
+    assert "площадка" not in steps
+
+
+def test_next_command_prints_the_calculated_steps(tmp_path: Path,
+                                                  monkeypatch: pytest.MonkeyPatch,
+                                                  capsys: pytest.CaptureFixture) -> None:
+    """В cmd_next шаг был вписан текстом и не совпадал с расчётом."""
+    from agent.ledger import Opportunity, set_status, upsert_opportunities
+
+    upsert_opportunities([Opportunity(
+        id="market:agenthansa:q88", channel="agent_marketplaces",
+        title="[AgentHansa] Квест", reward_usd=90.0, repo="agenthansa",
+        payload={"quest_id": "q88", "ev_per_hour": 15.0, "effort_hours": 3.0},
+    )])
+    set_status("market:agenthansa:q88", "queued")
+
+    assert main.main(["дальше"]) == 0
+    output = capsys.readouterr().out
+    assert "площадка квест q88" in output
+    assert "досье market:agenthansa:q88" not in output
+
+
+# --- досье: у квеста нет репозитория, и выдумывать его нельзя ----------------
+
+def test_quest_dossier_does_not_invent_a_github_repo(tmp_path: Path) -> None:
+    from agent import dossier as dossier_mod
+    from agent.ledger import Opportunity
+
+    item = Opportunity(
+        id="market:agenthansa:q77", channel="agent_marketplaces",
+        title="[AgentHansa] Обзор продукта", reward_usd=120.0, repo="agenthansa",
+        payload={"quest_id": "q77", "description": "Обзор на 800 слов",
+                 "requirements": "Ссылки на источники", "submissions": 3,
+                 "submission_cap": 50, "source": "snapshot", "snapshot_age_hours": 5.0,
+                 "verify_before_work": ["Прочитать правила квеста"]},
+    )
+    card = dossier_mod.DossierBuilder().build({
+        "id": item.id, "channel": item.channel, "title": item.title,
+        "repo": item.repo, "reward_usd": item.reward_usd, "url": "",
+        "payload": item.payload,
+    })
+    text = card.to_markdown()
+    assert "github.com/agenthansa" not in text
+    assert "Досье по квесту" in text
+    assert "площадка агентов · квест q77" in text
+    assert "Обзор на 800 слов" in text
+    assert "Ссылки на источники" in text
+    assert "отчёту 5.0ч" in text
+    assert "Отправляет человек" in text
+
+
+def test_quest_dossier_command_says_it_is_not_github(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture) -> None:
+    from agent import dossier as dossier_mod
+    from agent.ledger import Opportunity, upsert_opportunities
+
+    monkeypatch.setattr(main, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(dossier_mod, "project_root", lambda: tmp_path)
+
+    upsert_opportunities([Opportunity(
+        id="market:agenthansa:q9", channel="agent_marketplaces", title="[AgentHansa] Квест",
+        reward_usd=40.0, payload={"quest_id": "q9"},
+    )])
+    assert main.main(["досье", "market:agenthansa:q9"]) == 0
+    output = capsys.readouterr().out
+    assert "по квесту площадки" in output
+    assert "github.com/" not in output
+
+
+# --- дашборд: площадка видна на странице -------------------------------------
+
+def reset_dashboard_cache() -> None:
+    from agent import dashboard
+
+    dashboard._HANSA["data"] = None
+    dashboard._HANSA["at"] = 0.0
+
+
+def test_dashboard_shows_the_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import dashboard
+
+    write_snapshot(tmp_path, recent_stamp(1.5), [
+        QUEST_JSON,
+        {"id": "q-1", "title": "Мелкий квест", "reward_amount": 15},
+    ])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    reset_dashboard_cache()
+
+    hansa_state = dashboard._hansa()
+    assert hansa_state["quest_count"] == 2
+    assert hansa_state["best_reward"] == 120.0
+    assert hansa_state["sum_reward"] == 135.0
+    assert not hansa_state["stale"]
+    assert hansa_state["quests"][0]["id"] == "q-77", "лучший квест идёт первым"
+
+
+def test_dashboard_marks_a_stale_snapshot(tmp_path: Path,
+                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import dashboard
+
+    write_snapshot(tmp_path, recent_stamp(50.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    reset_dashboard_cache()
+    assert dashboard._hansa()["stale"] is True
+
+
+def test_dashboard_hansa_survives_a_broken_file(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent import dashboard
+
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "snapshots" / "hansa-report.json").write_text("не json", encoding="utf-8")
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    reset_dashboard_cache()
+    state = dashboard._hansa()
+    assert "не читается" in state["problem"] and state["quests"] == []
+
+
+def test_dashboard_hansa_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Страница обновляется каждые 2.5 секунды — файл не перечитываем зря."""
+    from agent import dashboard
+
+    write_snapshot(tmp_path, recent_stamp(1.0), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    reset_dashboard_cache()
+    assert dashboard._hansa()["quest_count"] == 1
+
+    write_snapshot(tmp_path, recent_stamp(0.1), [])
+    assert dashboard._hansa()["quest_count"] == 1, "второй вызов берёт кэш"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="нужен node для проверки интерфейса")
+def test_dashboard_renders_the_platform_block(tmp_path: Path,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    import re
+    import subprocess
+
+    from agent import dashboard
+
+    write_snapshot(tmp_path, recent_stamp(0.5), [QUEST_JSON])
+    monkeypatch.setattr(hansa, "project_root", lambda: tmp_path)
+    reset_dashboard_cache()
+    state = dashboard.collect_state()
+    assert state["hansa"]["quest_count"] == 1
+
+    js = re.search(r"<script>(.*?)</script>", dashboard.PAGE, re.S).group(1)
+    harness = tmp_path / "ui.js"
+    harness.write_text(
+        "const document = {getElementById: () => ({innerHTML: '', style: {}, className: '', "
+        "textContent: '', value: '', addEventListener: () => {}, disabled: false}), "
+        "querySelectorAll: () => [], addEventListener: () => {}};\n"
+        "const navigator = {clipboard: {writeText: async () => {}}};\n"
+        "const STATE = " + json.dumps(state, ensure_ascii=False) + ";\n"
+        "const fetch = async () => ({json: async () => STATE, text: async () => ''});\n" + js +
+        "\nrefresh().then(() => process.exit(0), (e) => { console.error(e); process.exit(1); });\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(harness)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr

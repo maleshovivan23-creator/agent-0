@@ -25,10 +25,12 @@ agent-руководства (``skill.md``/``llms.txt``), поэтому зде�
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.config import get_env
+from agent.config import get_env, project_root
 from agent.http import build_session
 
 #: Базовый адрес. Можно переопределить (AGENTHANSA_API) — например, для тестов.
@@ -39,6 +41,14 @@ MIN_PAYOUT_USDC = 10.0
 
 #: Сколько ждать ответа площадки.
 TIMEOUT = 25
+
+#: Отчёт цикла площадки, который складывает workflow GitHub Actions
+#: (.github/workflows/hansa.yml). Песочница разработки домен не видит, поэтому
+#: ферма читает результат работы с той стороны, где интернет открыт.
+SNAPSHOT_REL = "snapshots/hansa-report.json"
+
+#: Отчёт старше этого срока считается устаревшим: квесты разбирают за часы.
+SNAPSHOT_FRESH_HOURS = 24.0
 
 #: Пути, которые нужны для работы. Собраны из официального клиента.
 ROUTES = {
@@ -368,6 +378,76 @@ def register(name: str, description: str, base: Optional[str] = None,
     if not isinstance(payload, dict) or not payload.get("api_key"):
         raise HansaError("площадка не вернула api_key — регистрация не считается успешной")
     return payload
+
+
+@dataclass
+class Snapshot:
+    """Последний отчёт площадки, снятый на раннере GitHub."""
+
+    path: str
+    generated_at: str = ""
+    age_hours: Optional[float] = None
+    quests: List[Quest] = field(default_factory=list)
+    status: Dict[str, Any] = field(default_factory=dict)
+    problem: str = ""
+
+    @property
+    def stale(self) -> bool:
+        return self.age_hours is not None and self.age_hours > SNAPSHOT_FRESH_HOURS
+
+    @property
+    def usable(self) -> bool:
+        return bool(self.quests)
+
+    def note(self) -> str:
+        """Одна строка для журнала: откуда данные и насколько они свежие."""
+        if self.problem:
+            return self.problem
+        when = self.generated_at or "время неизвестно"
+        age = "" if self.age_hours is None else f", {self.age_hours:.1f}ч назад"
+        tail = " — отчёт устарел, проверьте квесты на площадке" if self.stale else ""
+        return f"данные из отчёта GitHub Actions ({when}{age}){tail}"
+
+
+def read_snapshot(path: Optional[str] = None) -> Snapshot:
+    """Прочитать отчёт цикла площадки, не ходя в сеть.
+
+    Ферма живёт там, где домен площадки закрыт, а цикл площадки — на раннере
+    GitHub. Отчёт в репозитории закрывает этот разрыв: квесты, снятые снаружи,
+    попадают в очередь и в дашборд, а человек видит, сколько отчёту часов.
+    """
+    target = project_root() / (path or SNAPSHOT_REL)
+    if not target.exists():
+        return Snapshot(path=str(target), problem=(
+            "отчёта площадки ещё нет: включите цикл в GitHub Actions "
+            "(.github/workflows/hansa.yml) — он сохранит snapshots/hansa-report.json"
+        ))
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return Snapshot(path=str(target), problem=f"отчёт площадки не читается: {exc}")
+    if not isinstance(payload, dict):
+        return Snapshot(path=str(target), problem="отчёт площадки неожиданного формата")
+
+    generated = str(payload.get("generated_at") or "")
+    age: Optional[float] = None
+    if generated:
+        try:
+            moment = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            age = round((datetime.now(timezone.utc) - moment).total_seconds() / 3600.0, 2)
+        except ValueError:
+            age = None
+
+    rows = payload.get("quests")
+    if isinstance(rows, dict):
+        rows = rows.get("items") or rows.get("quests")
+    quests = [normalize_quest(row) for row in rows] if isinstance(rows, list) else []
+    quests = [quest for quest in quests if quest.reward_usd > 0]
+    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    return Snapshot(path=str(target), generated_at=generated, age_hours=age,
+                    quests=quests, status=status)
 
 
 def masked_key(key: str = "") -> str:

@@ -372,6 +372,32 @@ def run_cycle(
     return result
 
 
+def _steps_for(channel: str, opportunity_id: str, payload: Dict[str, Any]) -> List[str]:
+    """Первый шаг зависит от канала: у квестов площадки другой рабочий цикл.
+
+    Раньше всем без разбора предлагалось «досье → план»: для квеста площадки
+    агентов это вело в публичный API GitHub по несуществующему репозиторию.
+    У квеста свой путь — открыть его на площадке, получить черновик, отправить
+    человеком и только потом закрывать задачу как выполненную.
+    """
+    if channel == "agent_marketplaces":
+        quest_id = str(payload.get("quest_id") or opportunity_id.split(":")[-1])
+        steps = [f"python -m agent.main площадка квест {quest_id}"]
+        if payload.get("source") == "snapshot":
+            steps.append("открыть квест на площадке: строки взяты из отчёта робота")
+        steps += [
+            f"python -m agent.main черновик {opportunity_id}",
+            "человек отправляет текст: python -m agent.main площадка отправить "
+            f"{quest_id} --файл <черновик> --подтверждаю",
+        ]
+        return steps
+    return [
+        f"python -m agent.main досье {opportunity_id}",
+        f"python -m agent.main план {opportunity_id}",
+        "сделать работу по плану",
+    ]
+
+
 def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[Dict[str, Any]]:
     """What the operator should actually do next, in order.
 
@@ -414,10 +440,8 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
         ev_hour = float(payload.get("ev_per_hour") or 0.0)
         if ev_hour < floor:
             continue
-        steps = [
-            f"python -m agent.main досье {row['id']}",
-            f"python -m agent.main план {row['id']}",
-            "сделать работу по плану",
+        steps = _steps_for(row["channel"], row["id"], payload)
+        steps += [
             f"python -m agent.main статус {row['id']} working",
             f"python -m agent.main часы --channel {row['channel']} --hours N --id {row['id']}",
             f"python -m agent.main выплата-запись --channel {row['channel']} "

@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+from agent.config import project_root
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -82,6 +84,10 @@ def paths_from_lines(text: str) -> List[str]:
     return result
 
 
+#: Подпись для досье квестов: репозитория GitHub у них нет.
+QUEST_REPO_LABEL = "площадка агентов"
+
+
 @dataclass
 class Dossier:
     opportunity_id: str
@@ -105,7 +111,47 @@ class Dossier:
     scope_notes: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
+    def _quest_markdown(self) -> str:
+        """Досье квеста площадки: без разделов про код и без ложных ссылок."""
+        parts = [
+            f"# Досье по квесту: {self.title}",
+            "",
+            f"- ID: `{self.opportunity_id}`",
+            f"- {self.repo}",
+            "",
+        ]
+        if self.scope_notes:
+            parts += ["## Условия квеста", ""] + [f"- {note}" for note in self.scope_notes] + [""]
+        if self.mentioned:
+            parts += ["## Что просят сделать", ""]
+            parts += [f"- {text}" for text in self.mentioned]
+            parts.append("")
+        if self.scope_files:
+            parts += ["## Требования", ""] + [f"- {item}" for item in self.scope_files] + [""]
+        if self.commands:
+            parts += ["## Порядок работы", ""]
+            parts += [f"{index}. `{command}`" if index > 1 else f"1. {command}"
+                      for index, command in enumerate(self.commands, 1)]
+            parts.append("")
+        parts += [
+            "## Что приложить к отправке",
+            "",
+            "- Текст по условиям квеста (робот приготовит черновик командой `черновик`).",
+            "- Ссылку-доказательство, если квест её требует: без неё работу чаще метят как спам.",
+            "- Отправляет человек: робот не публикует и не отправляет ничего сам.",
+            "",
+        ]
+        if self.notes:
+            parts += ["## Примечания", ""] + [f"- {note}" for note in self.notes] + [""]
+        return "\n".join(parts)
+
     def to_markdown(self) -> str:
+        if self.repo.startswith(QUEST_REPO_LABEL):
+            # Квест площадки: ссылки на GitHub тут не бывает, и разделы про
+            # код/дерево/манифесты смысла не имеют — их место занимает суть
+            # квеста, требования и порядок отправки.
+            return self._quest_markdown()
+
         parts = [
             f"# Досье по задаче: {self.title}",
             "",
@@ -214,6 +260,48 @@ class DossierBuilder:
         except ValueError:
             return None
 
+    def _quest_dossier(self, opportunity_id: str, opportunity: Dict[str, Any],
+                       payload: Dict[str, Any]) -> Dossier:
+        """Досье по квесту площадки: без сети, из того, что уже известно."""
+        quest_id = str(payload.get("quest_id") or opportunity_id.split(":")[-1])
+        dossier = Dossier(
+            opportunity_id=opportunity_id,
+            repo="",
+            title=str(opportunity.get("title") or ""),
+            url=str(opportunity.get("url") or ""),
+        )
+        dossier.repo = f"{QUEST_REPO_LABEL} · квест {quest_id}"
+        dossier.notes.append(
+            "Это квест площадки агентов, а не задача на GitHub: репозитория у него нет. "
+            "Результат — текст и доказательство; отправляет их человек."
+        )
+        hours = payload.get("snapshot_age_hours")
+        if payload.get("source") == "snapshot":
+            dossier.notes.append(
+                "данные из отчёта GitHub Actions"
+                + (f", отчёту {float(hours):.1f}ч — перед работой откройте квест на площадке"
+                   if isinstance(hours, (int, float)) else "")
+            )
+        dossier.scope_notes.append(
+            f"Награда: ${float(opportunity.get('reward_usd') or 0):,.0f} · "
+            f"дедлайн: {payload.get('deadline') or 'не указан'} · "
+            f"заявок: {payload.get('submissions', 0)}"
+            + (f" из {payload['submission_cap']}" if payload.get("submission_cap") else "")
+        )
+        if payload.get("requirements"):
+            dossier.scope_files.append(f"Требования: {payload['requirements']}")
+        description = str(payload.get("description") or "")
+        dossier.mentioned = [description[:800]] if description else []
+        dossier.commands = [
+            f"python -m agent.main площадка квест {quest_id}",
+            f"python -m agent.main черновик {opportunity_id}",
+            "отправка человеком: python -m agent.main площадка отправить "
+            f"{quest_id} --файл <черновик> --подтверждаю",
+        ]
+        for step in payload.get("verify_before_work") or []:
+            dossier.scope_notes.append(str(step))
+        return dossier
+
     def build(self, opportunity: Dict[str, Any]) -> Dossier:
         payload = opportunity.get("payload")
         if isinstance(payload, str):
@@ -227,8 +315,15 @@ class DossierBuilder:
         if not repo and "github:" in str(opportunity.get("id", "")):
             repo = str(opportunity["id"]).split("github:")[1].split("#")[0]
 
+        opportunity_id = str(opportunity.get("id"))
+        if opportunity_id.startswith("market:") or opportunity.get("channel") == "agent_marketplaces":
+            # Квест площадки агентов: репозитория GitHub у него нет, и делать
+            # вид, что он есть, нельзя — досье собрало бы метаданные чужого
+            # аккаунта с похожим именем. Собираем досье из данных самого квеста.
+            return self._quest_dossier(opportunity_id, opportunity, payload)
+
         dossier = Dossier(
-            opportunity_id=str(opportunity.get("id")),
+            opportunity_id=opportunity_id,
             repo=repo,
             title=str(opportunity.get("title") or ""),
             url=str(opportunity.get("url") or ""),
@@ -559,7 +654,6 @@ def build(opportunity: Dict[str, Any], token: str = "") -> Dossier:
 def save(opportunity: Dict[str, Any]) -> Tuple[Dossier, Any]:
     """Собрать досье и сохранить в reports/inbox. Возвращает (досье, путь)."""
     import re as _re
-    from agent.config import project_root
 
     dossier = build(opportunity)
     reports = project_root() / "reports" / "inbox"

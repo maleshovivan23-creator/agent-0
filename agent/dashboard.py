@@ -35,6 +35,7 @@ from agent import doctor as doctor_mod
 from agent import inbox as inbox_mod
 from agent import followup as followup_mod
 from agent import learning as learning_mod
+from agent import hansa
 from agent import watchdog as watchdog_mod
 from agent import payouts as payout_rails
 from agent.config import get_env
@@ -102,6 +103,7 @@ def start_cycle(channel: Optional[str] = None) -> bool:
 
 _READINESS: Dict[str, Any] = {"at": 0.0, "data": None}
 _FOLLOWUP: Dict[str, Any] = {"at": 0.0, "data": None}
+_HANSA: Dict[str, Any] = {"at": 0.0, "data": None}
 
 
 def _followup(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
@@ -115,6 +117,36 @@ def _followup(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
                                  "error": f"{exc.__class__.__name__}: {exc}"}
         _FOLLOWUP["at"] = now
     return _FOLLOWUP["data"]
+
+
+def _hansa(ttl: float = 60.0) -> Dict[str, Any]:
+    """Состояние площадки агентов из отчёта, снятого в GitHub Actions.
+
+    Живой API из песочницы недоступен, поэтому дашборд показывает последний
+    отчёт: сколько ему часов, сколько квестов и лучший из них. Файл читается с
+    диска, но всё равно кэшируется: страница обновляется каждые 2.5 секунды.
+    """
+    now = time.time()
+    if _HANSA["data"] is None or now - _HANSA["at"] > ttl:
+        try:
+            snapshot = hansa.read_snapshot()
+            quests = sorted(snapshot.quests, key=lambda quest: quest.reward_usd, reverse=True)
+            _HANSA["data"] = {
+                "problem": snapshot.problem,
+                "generated_at": snapshot.generated_at,
+                "age_hours": snapshot.age_hours,
+                "stale": snapshot.stale,
+                "key_present": bool(hansa.api_key()),
+                "quests": [quest.as_dict() for quest in quests[:8]],
+                "quest_count": len(quests),
+                "best_reward": quests[0].reward_usd if quests else 0.0,
+                "sum_reward": round(sum(quest.reward_usd for quest in quests), 2),
+            }
+        except Exception as exc:  # дашборд не должен падать из-за отчёта
+            _HANSA["data"] = {"problem": f"{exc.__class__.__name__}: {exc}",
+                              "quests": [], "quest_count": 0}
+        _HANSA["at"] = now
+    return _HANSA["data"]
 
 
 def _readiness(refresh: bool = False, ttl: float = 600.0) -> Dict[str, Any]:
@@ -184,6 +216,7 @@ def collect_state() -> Dict[str, Any]:
         "watchdog": watchdog_mod.state(),
         "learning": learning_mod.learned_state(),
         "followup": _followup(),
+        "hansa": _hansa(),
         "inbox": inbox_mod.pending(limit=10),
         "inbox_counts": inbox_mod.counts(),
         "queue": queue,
@@ -295,6 +328,9 @@ PAGE = r"""<!doctype html>
   </div>
 
   <div class="card wide" style="margin-bottom:14px">
+    <h2>Площадка агентов AgentHansa (без банка, USDC)</h2>
+    <div id="hansa"></div>
+
     <h2>Автопилот и очередь к публикации</h2>
     <div id="autopilot"></div>
     <div id="inbox" style="margin-top:10px"></div>
@@ -443,6 +479,34 @@ async function loadMoney(country) {
     const data = await (await fetch(url)).json();
     renderMoney(data);
   } catch (e) { /* keep previous view */ }
+}
+
+function renderHansa(a) {
+  if (!a) { $("hansa").innerHTML = ""; return; }
+  if (a.problem) {
+    $("hansa").innerHTML = `<div class="muted">${esc(a.problem)}</div>`;
+    return;
+  }
+  const age = a.age_hours == null ? "время неизвестно" : a.age_hours.toFixed(1) + " ч назад";
+  const cls = a.stale ? "wait" : "on";
+  const label = a.stale ? "отчёт устарел" : "отчёт свежий";
+  const quests = (a.quests || []).map(q => `
+    <div class="item ${q.reward_usd >= 50 ? "hot" : ""}">
+      <div class="t"><b>${money(q.reward_usd)}</b> ${esc(q.title)}</div>
+      <div class="m">id ${esc(q.id)} · заявок ${q.submissions}${q.cap ? " из " + q.cap : ""}` +
+      (q.deadline ? ` · ${esc(q.deadline)}` : "") + `</div>
+    </div>`).join("");
+  $("hansa").innerHTML = `
+    <div class="item ${a.stale ? "cold" : "hot"}">
+      <div class="t"><span class="pill ${cls}">${label}</span>
+        <b>квестов ${a.quest_count}</b> · лучший ${money(a.best_reward)} ·
+        сумма ${money(a.sum_reward)} · снято ${esc(age)}</div>
+      <div class="m">Ключ площадки: ${a.key_present ? "задан, живой API доступен"
+        : "не задан — данные из отчёта GitHub Actions, регистрация в Actions"}</div>
+      <div class="m">Работу отправляет человек: робот готовит черновик,
+        <code>площадка отправить … --подтверждаю</code> запускаете вы.</div>
+    </div>
+    ${quests || '<div class="muted">Квестов в отчёте нет.</div>'}`;
 }
 
 function renderAutopilot(a, counts) {
@@ -639,6 +703,7 @@ async function refresh() {
   renderReadiness(s.readiness);
   renderAutopilot(s.autopilot, s.inbox_counts);
   renderFollowup(s.followup);
+  renderHansa(s.hansa);
   renderWatchdog(s.watchdog);
   renderLearning(s.learning);
   renderInbox(s.inbox, s.inbox_counts);

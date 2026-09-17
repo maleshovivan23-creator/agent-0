@@ -108,28 +108,43 @@ class AgentMarketplacesChannel(Channel):
         другое ломало разбор на живом API. Теперь контракт один — на клиент,
         который вычитан из официального onboarding-материала площадки.
         """
-        if not hansa.api_key():
+        quests: List[hansa.Quest] = []
+        origin = ""
+
+        if hansa.api_key():
+            client = hansa.Hansa(session=self._session("agenthansa"))
+            try:
+                quests = client.quests()
+                origin = "живой API"
+            except hansa.HansaError as exc:
+                self.last_error = f"AgentHansa: {exc}"
+            except Exception as exc:
+                # Сеть до площадки может отвалиться целиком (в песочнице
+                # разработки домен вообще закрыт). Обещание модуля — деградировать
+                # честно: канал сообщает причину и не валит весь цикл фермы.
+                self.last_error = f"AgentHansa недоступна: {exc.__class__.__name__}: {exc}"
+        else:
             self.notes.append(
                 "AgentHansa: нужен ключ. Регистрация агента возвращает API-ключ "
                 f"({AGENTHANSA['docs']}), после этого добавьте AGENTHANSA_API_KEY в .env"
             )
-            return []
 
-        client = hansa.Hansa(session=self._session("agenthansa"))
-        try:
-            quests = client.quests()
-        except hansa.HansaError as exc:
-            self.last_error = f"AgentHansa: {exc}"
-            return []
-        except Exception as exc:
-            # Сеть до площадки может отвалиться целиком (в песочнице разработки
-            # домен вообще закрыт). Обещание модуля — деградировать честно:
-            # канал сообщает причину и не валит весь цикл фермы.
-            self.last_error = f"AgentHansa недоступна: {exc.__class__.__name__}: {exc}"
-            return []
+        # Живого ответа нет — берём последний отчёт цикла площадки. Он снят там,
+        # где домен открыт (GitHub Actions), и лежит в репозитории, поэтому
+        # ферма видит квесты даже из песочницы с закрытой сетью.
+        snapshot: Optional[hansa.Snapshot] = None
+        if not quests:
+            snapshot = hansa.read_snapshot()
+            if snapshot.usable:
+                quests = snapshot.quests
+                origin = snapshot.note()
+                self.notes.append(f"AgentHansa: {origin}")
+            elif snapshot.problem:
+                self.notes.append(f"AgentHansa: {snapshot.problem}")
 
         if not quests:
-            self.notes.append("AgentHansa: открытых квестов нет — заходите позже")
+            if hansa.api_key():
+                self.notes.append("AgentHansa: открытых квестов нет — заходите позже")
             return []
 
         now = datetime.now(timezone.utc)
@@ -162,7 +177,8 @@ class AgentMarketplacesChannel(Channel):
                     probability *= 0.2
 
             rationale = (
-                f"платформа {AGENTHANSA['title']}; выплата USDC на Base "
+                f"платформа {AGENTHANSA['title']}; источник: {origin or 'неизвестен'}; "
+                f"выплата USDC на Base "
                 f"(минимум {AGENTHANSA['min_payout_usdc']:.0f} USDC, банк не нужен); "
                 f"награда ${reward:,.0f}; заявок {submissions}"
                 f"{f' из {cap}' if cap else ''}{deadline_note}; "
@@ -183,6 +199,8 @@ class AgentMarketplacesChannel(Channel):
                     payload={
                         "platform": AGENTHANSA["name"],
                         "quest_id": quest_id,
+                        "source": "snapshot" if snapshot else "live",
+                        "snapshot_age_hours": snapshot.age_hours if snapshot else None,
                         "description": _short(quest.description, 2000),
                         "requirements": _short(quest.requirements, 800),
                         "submissions": submissions,
@@ -207,7 +225,9 @@ class AgentMarketplacesChannel(Channel):
                             "Прочитать правила квеста и критерии приёмки на площадке.",
                             "Проверить дедлайн и лимит заявок: часть квестов закрывается быстро.",
                             "Убедиться, что кошелёк привязан (иначе выплата не уйдёт).",
-                        ],
+                        ]
+                        + (["Строки взяты из отчёта GitHub Actions, а не из живого API: "
+                            "перед работой откройте квест на площадке."] if snapshot else []),
                     },
                 )
             )
