@@ -94,3 +94,11 @@ jobs:
               if data.get("detail_requested") and not got:
                   print("::warning::разбор страницы задачи перестал находить описание")
           PY
+
+      - name: Отчёт площадки — артефактом
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taskmarket-report
+          path: snapshots/taskmarket-report.json
+          if-no-files-found: ignore
