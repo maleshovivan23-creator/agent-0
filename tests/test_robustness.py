@@ -381,3 +381,40 @@ def test_observations_of_one_day_are_not_multiplied_by_old_rows(
     ).fetchone()["n"]
     conn.close()
     assert rows == 1
+
+
+# --- 9. решение человека в очереди доходит до обучения ------------------------
+
+
+def test_human_decision_in_the_inbox_teaches_the_robot(capsys: pytest.CaptureFixture) -> None:
+    """Сквозной путь «пометил черновик → запрос получил вес».
+
+    Раньше эта связка проверялась только на живом запуске: 0 решений при
+    десятках наблюдений — и никто не знал, доходит ли сигнал до обучения.
+    """
+    from agent import inbox, main
+
+    upsert_opportunities([
+        Opportunity(id="github:acme/parser#7", channel="github_bounties",
+                    title="Fix the tokenizer", repo="acme/parser", reward_usd=200.0,
+                    payload={"query": "label:bounty", "playbook": "docs"}),
+    ])
+    # проход, который нашёл задачу, — иначе запрос не попадёт в статистику запросов
+    learning.observe("label:bounty", new_items=3)
+    item_id = inbox.add("github:acme/parser#7", "github_bounties", "application", "Заявка")
+
+    assert main.main(["входящие-пропустить", str(item_id)]) == 0
+    capsys.readouterr()
+
+    assert inbox.get(item_id)["status"] == "skipped"
+    stats = {item.subject: item for item in learning.query_stats()}
+    assert stats["label:bounty"].skipped == 1
+    assert stats["label:bounty"].decisions == 1
+
+    # то же самое через вторую половину пути: отправленный черновик поднимает вес
+    second = inbox.add("github:acme/parser#7", "github_bounties", "brief", "План")
+    assert main.main(["входящие-отправлено", str(second)]) == 0
+    capsys.readouterr()
+    stats = {item.subject: item for item in learning.query_stats()}
+    assert stats["label:bounty"].published == 1
+    assert stats["label:bounty"].decisions == 2
