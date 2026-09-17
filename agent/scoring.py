@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from agent import playbooks
+
 #: Anything above this is almost certainly a joke or a scam bait.
 MAX_PLAUSIBLE_REWARD = 50_000.0
 #: Below this a task is not worth the context switch.
@@ -47,6 +49,8 @@ class Score:
     reward_source: str
     effort_hours: float
     rationale: str
+    playbook: str = "generic"
+    playbook_title: str = ""
     components: Dict[str, float] = field(default_factory=dict)
 
 
@@ -196,10 +200,35 @@ def score_opportunity(
     comments: int,
     repo_stars: int,
     hourly_rate: float,
+    triage_probability: Optional[float] = None,
+    verified_amount: Optional[float] = None,
+    playbook_key: Optional[str] = None,
+    age_days: Optional[int] = None,
 ) -> Score:
+    """Score an opportunity.
+
+    Two optional inputs make the estimate much more honest when available:
+
+    * ``triage_probability`` — measured competition (``/attempt`` counts, open
+      PRs) beats any heuristic;
+    * ``verified_amount`` — the amount a bounty bot states in the issue.
+    """
     reward, reward_source = extract_reward(labels, title, body)
+    if verified_amount:
+        reward, reward_source = float(verified_amount), "bounty bot в задаче"
+
+    playbook = playbooks.get(playbook_key) if playbook_key else playbooks.classify(labels, title, body)
     effort = estimate_effort(comments, labels, len(body or ""))
-    probability = probability_of_success(labels, comments, repo_stars)
+    adjusted_hours = playbooks.leverage_hours(playbook.key, effort.hours)
+    effort_components = {**effort.components, "playbook_leverage": round(adjusted_hours - effort.hours, 2)}
+    adjusted_effort = Effort(hours=adjusted_hours, components=effort_components, notes=effort.notes)
+
+    probability = (
+        float(triage_probability)
+        if triage_probability is not None
+        else probability_of_success(labels, comments, repo_stars)
+    )
+    effort = adjusted_effort
 
     expected = probability * reward - effort.hours * hourly_rate * 0.15
     ev_per_hour = expected / effort.hours if effort.hours else 0.0
@@ -209,14 +238,28 @@ def score_opportunity(
     total = max(0.0, ev_per_hour) + min(reward / 100.0, 8.0)
     if reward < MIN_USEFUL_REWARD:
         total *= 0.3
+    # A field of dozens of competitors is a signal to walk away, not to hurry.
+    if probability < 0.02:
+        total *= 0.05
+
+    # Early-mover advantage: the first day of a bounty is worth far more than
+    # its third week, because the field is still empty. Measured on live
+    # bounties: a fresh $700 task with 0 attempts versus the same task with 36.
+    fresh_bonus = 0.0
+    if age_days is not None and age_days <= 3 and probability >= 0.05:
+        fresh_bonus = 0.25
+        total *= 1 + fresh_bonus
 
     rationale_bits = [
         f"награда ${reward:,.0f}" if reward else "награда не указана",
         f"источник: {reward_source}",
+        f"playbook: {playbook.title}",
         f"оценка {effort.hours:.1f}ч",
-        f"шанс успеха ~{probability:.0%}",
+        f"шанс успеха ~{probability:.1%}",
         f"EV/час ~${ev_per_hour:,.1f}",
     ]
+    if fresh_bonus:
+        rationale_bits.append(f"свежая задача (+{fresh_bonus:.0%} за ранний вход)")
     rationale_bits.extend(effort.notes)
     rationale = "; ".join(rationale_bits)
 
@@ -229,5 +272,7 @@ def score_opportunity(
         reward_source=reward_source,
         effort_hours=effort.hours,
         rationale=rationale,
+        playbook=playbook.key,
+        playbook_title=playbook.title,
         components=effort.components,
     )

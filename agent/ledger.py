@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS payouts (
     verified_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS hours (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    opportunity_id TEXT,
+    hours REAL NOT NULL,
+    note TEXT,
+    logged_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel TEXT NOT NULL,
@@ -137,7 +146,7 @@ def upsert_opportunities(items: List[Opportunity]) -> int:
                 f"ON CONFLICT(id) DO UPDATE SET "
                 f"score=excluded.score, reward_usd=excluded.reward_usd, "
                 f"rationale=excluded.rationale, fetched_at=excluded.fetched_at, "
-                f"payload=excluded.payload",
+                f"payload=excluded.payload, status=excluded.status",
                 row,
             )
         conn.commit()
@@ -234,6 +243,142 @@ def verify_payout(payout_id: int) -> bool:
         conn.close()
 
 
+def set_status(opportunity_id: str, status: str) -> bool:
+    """Move an opportunity through the funnel: queued -> working -> submitted -> paid/dropped."""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE opportunities SET status=? WHERE id=?", (status, opportunity_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_opportunity(opportunity_id: str) -> Optional[Dict[str, Any]]:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM opportunities WHERE id=?", (opportunity_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def log_hours(channel: str, hours: float, opportunity_id: str = "", note: str = "") -> int:
+    """Record time actually spent. This is what makes the effective rate real."""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO hours (channel, opportunity_id, hours, note, logged_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (channel, opportunity_id, hours, note, _utcnow()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def analytics() -> Dict[str, Any]:
+    """Income analytics: what the farm actually earns per hour of your time.
+
+    The headline number is the *effective hourly rate*: verified income divided
+    by hours you logged. Anything else (queue value, pipeline EV) is an
+    estimate and is labelled as such.
+    """
+    conn = connect()
+    try:
+        def scalar(sql: str, params: tuple = ()) -> float:
+            row = conn.execute(sql, params).fetchone()
+            value = row[0] if row and row[0] is not None else 0.0
+            return float(value)
+
+        verified = scalar("SELECT SUM(amount) FROM payouts WHERE verified=1")
+        claimed = scalar("SELECT SUM(amount) FROM payouts WHERE verified=0")
+        hours = scalar("SELECT SUM(hours) FROM hours")
+
+        pipeline_rows = conn.execute(
+            "SELECT id, title, channel, reward_usd, score, rationale, payload, url "
+            "FROM opportunities WHERE status='queued' ORDER BY score DESC LIMIT 15"
+        ).fetchall()
+        pipeline_ev = 0.0
+        pipeline_hours = 0.0
+        pipeline_items: List[Dict[str, Any]] = []
+        for row in pipeline_rows:
+            payload = json.loads(row["payload"] or "{}")
+            expected = float(payload.get("expected_value_usd") or 0.0)
+            effort = float(payload.get("effort_hours") or 0.0)
+            # A negative expected value is a "do not touch", not pipeline value.
+            pipeline_ev += max(0.0, expected)
+            pipeline_hours += effort if expected > 0 else 0.0
+            pipeline_items.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "channel": row["channel"],
+                    "reward_usd": row["reward_usd"],
+                    "score": row["score"],
+                    "expected_value_usd": round(expected, 2),
+                    "effort_hours": effort,
+                    "url": row["url"],
+                }
+            )
+
+        by_channel = []
+        for row in conn.execute(
+            "SELECT o.channel AS channel, COUNT(*) AS n, SUM(o.reward_usd) AS advertised, "
+            "AVG(o.score) AS avg_score "
+            "FROM opportunities o WHERE o.status='queued' GROUP BY o.channel "
+            "ORDER BY advertised DESC"
+        ).fetchall():
+            channel = row["channel"]
+            channel_verified = scalar(
+                "SELECT SUM(amount) FROM payouts WHERE verified=1 AND channel=?", (channel,)
+            )
+            channel_hours = scalar("SELECT SUM(hours) FROM hours WHERE channel=?", (channel,))
+            by_channel.append(
+                {
+                    "channel": channel,
+                    "queued": row["n"],
+                    "advertised_usd": round(float(row["advertised"] or 0), 2),
+                    "avg_score": round(float(row["avg_score"] or 0), 2),
+                    "verified_usd": round(channel_verified, 2),
+                    "hours": round(channel_hours, 2),
+                    "effective_usd_per_hour": (
+                        round(channel_verified / channel_hours, 2) if channel_hours else 0.0
+                    ),
+                }
+            )
+
+        attractive = sum(
+            1 for item in pipeline_items if item["expected_value_usd"] > 0
+        )
+        return {
+            "verified_usd": round(verified, 2),
+            "claimed_usd": round(claimed, 2),
+            "attractive_count": attractive,
+            "rejected_count": len(pipeline_items) - attractive,
+            "hours_logged": round(hours, 2),
+            "effective_usd_per_hour": round(verified / hours, 2) if hours else 0.0,
+            "pipeline_ev_usd": round(pipeline_ev, 2),
+            "pipeline_hours": round(pipeline_hours, 1),
+            "pipeline_ev_per_hour": (
+                round(pipeline_ev / pipeline_hours, 2) if pipeline_hours else 0.0
+            ),
+            "pipeline": pipeline_items,
+            "by_channel": by_channel,
+            "estimate_note": (
+                "pipeline_ev_usd — оценка ожидаемой выручки по очереди, а не гарантия: "
+                "она считается из вероятности успеха и суммы награды."
+            ),
+        }
+    finally:
+        conn.close()
+
+
 def summary() -> Dict[str, Any]:
     """Ledger summary. Verified income is reported separately from claims."""
     conn = connect()
@@ -245,6 +390,9 @@ def summary() -> Dict[str, Any]:
 
         total_opps = int(scalar("SELECT COUNT(*) FROM opportunities"))
         queued = int(scalar("SELECT COUNT(*) FROM opportunities WHERE status='queued'"))
+        dropped = int(scalar("SELECT COUNT(*) FROM opportunities WHERE status='dropped'"))
+        working = int(scalar("SELECT COUNT(*) FROM opportunities "
+                             "WHERE status IN ('working','proposed','submitted')"))
         verified_usd = scalar("SELECT SUM(amount) FROM payouts WHERE verified=1")
         claimed_usd = scalar("SELECT SUM(amount) FROM payouts WHERE verified=0")
         payouts = [
@@ -277,6 +425,8 @@ def summary() -> Dict[str, Any]:
         return {
             "opportunities_total": total_opps,
             "opportunities_queued": queued,
+            "opportunities_dropped": dropped,
+            "opportunities_in_progress": working,
             "verified_usd": round(verified_usd, 2),
             "claimed_usd": round(claimed_usd, 2),
             "payouts": payouts,

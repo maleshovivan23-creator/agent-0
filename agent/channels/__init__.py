@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Type
 
+from agent.channels.audit_contests import AuditContestsChannel
 from agent.channels.base import Channel
 from agent.channels.bug_recon import BugReconChannel
 from agent.channels.github_bounties import GitHubBountyChannel
@@ -17,6 +18,7 @@ from agent.channels.github_bounties import GitHubBountyChannel
 #: Workers the farm can actually run today.
 ACTIVE_CHANNELS: Dict[str, Type[Channel]] = {
     GitHubBountyChannel.name: GitHubBountyChannel,
+    AuditContestsChannel.name: AuditContestsChannel,
     BugReconChannel.name: BugReconChannel,
 }
 

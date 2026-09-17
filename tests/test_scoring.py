@@ -81,6 +81,48 @@ def test_competition_increases_effort() -> None:
     assert crowded.probability < quiet.probability
 
 
+def test_triage_probability_overrides_heuristic() -> None:
+    """Measured competition must beat the comment-count heuristic."""
+    crowded = score_opportunity(
+        labels=["bounty", "$700"], title="Fix pagination", body="x" * 500,
+        comments=1, repo_stars=300, hourly_rate=15.0,
+        triage_probability=0.008, verified_amount=700.0,
+    )
+    quiet = score_opportunity(
+        labels=["bounty", "$700"], title="Fix pagination", body="x" * 500,
+        comments=1, repo_stars=300, hourly_rate=15.0,
+        triage_probability=0.22, verified_amount=700.0,
+    )
+    assert crowded.probability == 0.008
+    assert quiet.probability == 0.22
+    assert crowded.total < quiet.total / 10
+    assert crowded.reward_source == "bounty bot в задаче"
+
+
+def test_fresh_bounty_gets_early_mover_bonus() -> None:
+    kwargs = dict(
+        labels=["bounty", "$500"], title="Add integration", body="y" * 600,
+        comments=0, repo_stars=1000, hourly_rate=15.0, triage_probability=0.2,
+    )
+    fresh = score_opportunity(**kwargs, age_days=1)
+    stale = score_opportunity(**kwargs, age_days=40)
+    assert fresh.total > stale.total
+    assert "свежая задача" in fresh.rationale
+    assert "свежая задача" not in stale.rationale
+
+
+def test_playbook_choice_shortens_estimated_hours() -> None:
+    common = dict(
+        labels=["bounty", "$100"], title="A", body="z" * 500,
+        comments=0, repo_stars=100, hourly_rate=15.0,
+    )
+    docs = score_opportunity(**common, playbook_key="documentation")
+    generic = score_opportunity(**common, playbook_key="generic")
+    assert docs.playbook == "documentation"
+    assert docs.playbook_title
+    assert docs.effort_hours < generic.effort_hours
+
+
 def test_max_plausible_boundary() -> None:
     assert MAX_PLAUSIBLE_REWARD == 50_000.0
     reward, _ = extract_reward([], "", f"reward ${MAX_PLAUSIBLE_REWARD + 1}")

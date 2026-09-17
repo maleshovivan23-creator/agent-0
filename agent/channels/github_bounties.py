@@ -19,6 +19,7 @@ worker makes at most a handful of queries per cycle and backs off on 403/429.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -31,16 +32,34 @@ from agent.scoring import looks_like_junk, score_opportunity
 
 API = "https://api.github.com"
 
+#: Base queries. Freshness-filtered variants are added at runtime, because the
+#: single biggest factor in winning a bounty is being early: a $700 task with
+#: 36 competitors pays nothing, the same task on day one pays full.
 DEFAULT_QUERIES = [
     'label:"💎 Bounty" state:open type:issue',
     'label:bounty state:open type:issue',
     '"bounty" in:title state:open type:issue',
     'label:"help wanted" label:bounty state:open type:issue',
-    'label:"bounty" label:"AI agent friendly" state:open type:issue',
+]
+
+#: Added automatically with a `created:>` filter — newest first.
+FRESH_QUERIES = [
+    'label:"💎 Bounty" state:open type:issue',
+    'label:bounty state:open type:issue',
 ]
 
 #: Labels that usually mean "the money exists and the task is scoped".
 FUNDED_LABELS = ("💎 bounty", "bounty", "bug bounty", "$")
+
+
+def _age_days(iso: Optional[str]) -> int:
+    if not iso:
+        return 999
+    try:
+        moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return 999
+    return max(0, (datetime.now(timezone.utc) - moment).days)
 
 
 class GitHubBountyChannel(Channel):
@@ -73,7 +92,12 @@ class GitHubBountyChannel(Channel):
         raw = get_env("BOUNTY_QUERIES", "") or ""
         if raw.strip():
             return [q.strip() for q in raw.split("|") if q.strip()]
-        return list(DEFAULT_QUERIES)
+
+        fresh_days = int(get_env("FRESH_WINDOW_DAYS", "21") or 21)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=fresh_days)).strftime("%Y-%m-%d")
+        queries = list(DEFAULT_QUERIES)
+        queries += [f"{query} created:>{cutoff}" for query in FRESH_QUERIES]
+        return queries
 
     # ------------------------------------------------------------------ http
 
@@ -139,6 +163,7 @@ class GitHubBountyChannel(Channel):
             comments=comments,
             repo_stars=stars,
             hourly_rate=hourly_rate,
+            age_days=_age_days(item.get("created_at")),
         )
 
         junk = looks_like_junk(title, score.reward_usd, stars)
@@ -164,6 +189,7 @@ class GitHubBountyChannel(Channel):
             rationale=rationale,
             payload={
                 "labels": labels,
+                "body": body[:1500],
                 "comments": comments,
                 "stars": stars,
                 "effort_hours": score.effort_hours,
@@ -172,6 +198,7 @@ class GitHubBountyChannel(Channel):
                 "expected_value_usd": score.expected_value_usd,
                 "created_at": item.get("created_at"),
                 "updated_at": item.get("updated_at"),
+                "age_days": _age_days(item.get("created_at")),
             },
         )
 
@@ -214,6 +241,7 @@ class GitHubBountyChannel(Channel):
                 comments=int(item.get("comments", 0) or 0),
                 repo_stars=0,
                 hourly_rate=hourly_rate,
+                age_days=_age_days(item.get("created_at")),
             )
             if looks_like_junk(title, cheap.reward_usd, 0):
                 continue

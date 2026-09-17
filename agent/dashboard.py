@@ -1,17 +1,23 @@
 """AGENT-0 dashboard.
 
-A dependency-free HTTP server that renders the farm state: which workers are
-allowed, which are refused and why, what opportunities were found, and what
-income has actually been verified.
+A dependency-free HTTP server that answers three questions on one screen:
+
+1. **Сколько заработано** — verified income, claimed payouts, effective hourly
+   rate (verified money divided by logged hours), and the estimated value of
+   the pipeline with the estimate clearly labelled as an estimate.
+2. **Что делать сейчас** — the ordered list of highest expected value per hour,
+   each with the exact command to start.
+3. **Чего делать не стоит** — bounties the triage rejected (already paid, or a
+   field of 30+ competitors) and the tactics the policy refuses, with reasons.
 
 Endpoints:
-    GET  /                dashboard
-    GET  /api/state       full state as JSON
-    POST /api/run         start a farm cycle in the background
-    POST /api/payout      record a claimed payout
-    POST /api/payout/verify  confirm a payout (this is the human step)
+    GET  /                    dashboard
+    GET  /api/state           everything as JSON
+    POST /api/run             start a farm cycle in the background
+    POST /api/payout          record a claimed payout
+    POST /api/payout/verify   confirm a payout (the human step)
 
-The server binds 0.0.0.0 so it is reachable behind the sandbox preview proxy.
+Binds 0.0.0.0 so it is reachable through the sandbox preview proxy.
 """
 
 from __future__ import annotations
@@ -24,12 +30,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
-from agent.farm import overview, run_cycle
-from agent.ledger import record_payout, summary, top_opportunities, verify_payout
-
-# --------------------------------------------------------------------------
-# background runner
-# --------------------------------------------------------------------------
+from agent.farm import low_value, next_actions, overview, run_cycle
+from agent.ledger import (
+    analytics,
+    record_payout,
+    summary,
+    top_opportunities,
+    verify_payout,
+)
 
 _RUNNER_LOCK = threading.Lock()
 _RUNNER: Dict[str, Any] = {
@@ -45,20 +53,23 @@ _RUNNER: Dict[str, Any] = {
 def _log(message: str) -> None:
     stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
     _RUNNER["log"].append(f"{stamp} {message}")
-    _RUNNER["log"] = _RUNNER["log"][-40:]
+    _RUNNER["log"] = _RUNNER["log"][-60:]
 
 
 def _run_cycle_background(channel: Optional[str] = None) -> None:
     try:
         _log(f"цикл запущен (канал: {channel or 'все'})")
-        result = run_cycle(channels=[channel] if channel else None, limit=25)
+        result = run_cycle(channels=[channel] if channel else None, limit=30)
         with _RUNNER_LOCK:
             _RUNNER["result"] = result.as_dict()
             _RUNNER["error"] = None
-        _log(f"цикл завершён: найдено {result.found}, сохранено {result.kept}")
+        _log(
+            f"цикл завершён: найдено {result.found}, сохранено {result.kept}, "
+            f"отсеяно {result.dropped}, триаж {result.triaged}"
+        )
         for note in result.notes:
             _log(f"примечание: {note}")
-    except Exception as exc:  # keep the dashboard alive no matter what
+    except Exception as exc:
         with _RUNNER_LOCK:
             _RUNNER["error"] = f"{exc.__class__.__name__}: {exc}"
         _log(f"ошибка: {exc.__class__.__name__}: {exc}")
@@ -77,35 +88,45 @@ def start_cycle(channel: Optional[str] = None) -> bool:
         _RUNNER["finished_at"] = None
         _RUNNER["result"] = None
         _RUNNER["error"] = None
-    thread = threading.Thread(target=_run_cycle_background, args=(channel,), daemon=True)
-    thread.start()
+    threading.Thread(target=_run_cycle_background, args=(channel,), daemon=True).start()
     return True
-
-
-# --------------------------------------------------------------------------
-# state
-# --------------------------------------------------------------------------
 
 
 def collect_state() -> Dict[str, Any]:
     ledger = summary()
+    stats = analytics()
     farm = overview()
+
     queue = []
-    for row in top_opportunities(limit=30):
-        queue.append(
-            {
-                "id": row["id"],
-                "channel": row["channel"],
-                "title": row["title"],
-                "url": row["url"],
-                "repo": row["repo"],
-                "reward_usd": row["reward_usd"],
-                "reward_source": row["reward_source"],
-                "score": row["score"],
-                "rationale": row["rationale"],
-                "fetched_at": row["fetched_at"],
-            }
-        )
+    contests = []
+    for row in top_opportunities(limit=60):
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        item = {
+            "id": row["id"],
+            "channel": row["channel"],
+            "title": row["title"],
+            "url": row["url"],
+            "repo": row["repo"],
+            "reward_usd": row["reward_usd"],
+            "reward_source": row["reward_source"],
+            "score": row["score"],
+            "rationale": row["rationale"],
+            "fetched_at": row["fetched_at"],
+            "playbook": payload.get("playbook", ""),
+            "ev_per_hour": payload.get("ev_per_hour", 0.0),
+            "expected_value_usd": payload.get("expected_value_usd", 0.0),
+            "effort_hours": payload.get("effort_hours", 0.0),
+            "triage": payload.get("triage_verdict", ""),
+            "triage_notes": payload.get("triage_notes", []),
+            "attempts": payload.get("attempts"),
+            "open_prs": payload.get("open_prs"),
+            "funder": payload.get("funder"),
+        }
+        (contests if row["channel"] == "audit_contests" else queue).append(item)
+
     with _RUNNER_LOCK:
         runner = {
             "running": _RUNNER["running"],
@@ -115,12 +136,19 @@ def collect_state() -> Dict[str, Any]:
             "error": _RUNNER["error"],
             "log": list(_RUNNER["log"]),
         }
-    return {"ledger": ledger, "farm": farm, "queue": queue, "runner": runner}
 
+    return {
+        "ledger": ledger,
+        "stats": stats,
+        "farm": farm,
+        "queue": queue,
+        "contests": contests,
+        "next": next_actions(limit=5),
+        "low_value": low_value(limit=6),
+        "payouts": ledger.get("payouts", []),
+        "runner": runner,
+    }
 
-# --------------------------------------------------------------------------
-# http
-# --------------------------------------------------------------------------
 
 PAGE = r"""<!doctype html>
 <html lang="ru">
@@ -130,66 +158,60 @@ PAGE = r"""<!doctype html>
 <title>AGENT-0 — ферма воркеров</title>
 <style>
   :root {
-    --bg: #0b0d10; --panel: #12151a; --panel-2: #171b22; --line: #232935;
-    --text: #e6e9ef; --dim: #8b94a7; --green: #38d39f; --amber: #f0b429;
-    --red: #ff6b6b; --blue: #5aa9ff;
+    --bg:#0b0d10; --panel:#12151a; --panel2:#171b22; --line:#232935;
+    --text:#e6e9ef; --dim:#8b94a7; --green:#38d39f; --amber:#f0b429;
+    --red:#ff6b6b; --blue:#5aa9ff; --violet:#b98cff;
   }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  header {
-    border-bottom: 1px solid var(--line); padding: 18px 24px;
-    display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
-    justify-content: space-between; background: var(--panel);
-  }
-  h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
-  h1 span { color: var(--green); }
-  .muted { color: var(--dim); }
-  .wrap { padding: 24px; max-width: 1400px; margin: 0 auto; }
-  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-  .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 16px; overflow: hidden;
-  }
-  .card h2 { font-size: 13px; margin: 0 0 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--dim); }
-  .stats { display: flex; flex-wrap: wrap; gap: 24px; }
-  .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; }
-  .stat .v { font-size: 22px; margin-top: 4px; }
-  .v.green { color: var(--green); } .v.amber { color: var(--amber); } .v.red { color: var(--red); }
-  button {
-    font: inherit; background: var(--panel-2); color: var(--text); cursor: pointer;
-    border: 1px solid var(--line); border-radius: 8px; padding: 9px 16px;
-  }
-  button:hover { border-color: var(--green); color: var(--green); }
-  button:disabled { opacity: .45; cursor: progress; }
-  button.primary { border-color: #2b6b56; background: #10352a; color: var(--green); }
-  button.tiny { padding: 4px 10px; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; color: var(--dim); font-weight: normal; font-size: 11px;
-       text-transform: uppercase; letter-spacing: .6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-  td { padding: 8px; border-bottom: 1px solid #1a1f28; vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  a { color: var(--blue); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); }
-  .pill.on { color: var(--green); border-color: #2b6b56; background: #10352a; }
-  .pill.off { color: var(--red); border-color: #5a2b2b; background: #2c1414; }
-  .pill.wait { color: var(--amber); border-color: #5a4a1f; background: #2b2410; }
-  .reason { color: var(--dim); font-size: 12px; margin-top: 4px; }
-  .q { border-left: 2px solid var(--line); padding-left: 12px; margin-bottom: 14px; }
-  .q .t { font-size: 13px; }
-  .q .m { color: var(--dim); font-size: 11.5px; margin-top: 3px; }
-  .log { background: #0d1014; border: 1px solid var(--line); border-radius: 8px;
-         padding: 10px; font-size: 12px; color: var(--dim); max-height: 200px; overflow: auto; white-space: pre-wrap; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  input, select {
-    font: inherit; background: #0d1014; color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 8px; min-width: 90px;
-  }
-  .score { color: var(--green); }
-  .foot { color: var(--dim); font-size: 12px; margin-top: 24px; line-height: 1.7; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{border-bottom:1px solid var(--line);padding:16px 24px;background:var(--panel);
+         display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
+  h1{font-size:17px;margin:0;letter-spacing:.5px}
+  h1 span{color:var(--green)}
+  .wrap{padding:20px;max-width:1500px;margin:0 auto}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;overflow:hidden}
+  .card.wide{grid-column:1/-1}
+  .card h2{font-size:12px;margin:0 0 10px;letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+  .stats{display:flex;flex-wrap:wrap;gap:26px}
+  .stat .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+  .stat .v{font-size:21px;margin-top:3px}
+  .v.green{color:var(--green)}.v.amber{color:var(--amber)}.v.red{color:var(--red)}.v.blue{color:var(--blue)}
+  .muted{color:var(--dim)}
+  button{font:inherit;background:var(--panel2);color:var(--text);cursor:pointer;
+         border:1px solid var(--line);border-radius:8px;padding:8px 14px}
+  button:hover{border-color:var(--green);color:var(--green)}
+  button:disabled{opacity:.45;cursor:progress}
+  button.primary{border-color:#2b6b56;background:#10352a;color:var(--green)}
+  button.tiny{padding:3px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--dim);font-weight:normal;font-size:11px;text-transform:uppercase;
+     letter-spacing:.5px;padding:5px 6px;border-bottom:1px solid var(--line)}
+  td{padding:6px;border-bottom:1px solid #1a1f28;vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+  code{background:#0d1014;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+  .pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:10.5px;border:1px solid var(--line);white-space:nowrap}
+  .pill.on{color:var(--green);border-color:#2b6b56;background:#10352a}
+  .pill.off{color:var(--red);border-color:#5a2b2b;background:#2c1414}
+  .pill.wait{color:var(--amber);border-color:#5a4a1f;background:#2b2410}
+  .pill.info{color:var(--blue);border-color:#2b4a6b;background:#10202c}
+  .pill.aux{color:var(--violet);border-color:#4a3a6b;background:#1d1730}
+  .item{border-left:2px solid var(--line);padding:0 0 12px 12px;margin-bottom:12px}
+  .item.hot{border-left-color:var(--green)}
+  .item.cold{border-left-color:#3a2020;opacity:.75}
+  .item .t{font-size:13px}
+  .item .m{color:var(--dim);font-size:11.5px;margin-top:3px}
+  .log{background:#0d1014;border:1px solid var(--line);border-radius:8px;padding:10px;
+       font-size:11.5px;color:var(--dim);max-height:190px;overflow:auto;white-space:pre-wrap}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,select{font:inherit;background:#0d1014;color:var(--text);border:1px solid var(--line);
+               border-radius:8px;padding:7px;min-width:80px}
+  .bar{height:7px;border-radius:4px;background:#232935;overflow:hidden;margin-top:5px}
+  .bar > i{display:block;height:100%;background:linear-gradient(90deg,#2b6b56,#38d39f)}
+  .foot{color:var(--dim);font-size:12px;margin-top:22px;line-height:1.75}
+  details summary{cursor:pointer;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.6px}
 </style>
 </head>
 <body>
@@ -197,50 +219,77 @@ PAGE = r"""<!doctype html>
   <h1>AGENT<span>-0</span> · ферма воркеров</h1>
   <div class="row">
     <span id="runner-pill" class="pill wait">простой</span>
-    <button id="run" class="primary">Запустить цикл</button>
     <select id="channel">
       <option value="">все воркеры</option>
-      <option value="github_bounties">github_bounties</option>
-      <option value="bug_recon">bug_recon</option>
+      <option value="github_bounties">GitHub bounty</option>
+      <option value="audit_contests">Аудит-контесты</option>
+      <option value="bug_recon">Разведка (нужен scope)</option>
     </select>
+    <button id="run" class="primary">Запустить цикл</button>
   </div>
 </header>
 
 <div class="wrap">
-  <div class="card" style="margin-bottom:16px">
+  <div class="card wide" style="margin-bottom:14px">
     <div class="stats">
       <div class="stat"><div class="k">Подтверждённый доход</div><div class="v green" id="s-verified">$0.00</div></div>
       <div class="stat"><div class="k">Заявлено, не подтверждено</div><div class="v amber" id="s-claimed">$0.00</div></div>
-      <div class="stat"><div class="k">Возможностей в базе</div><div class="v" id="s-opps">0</div></div>
-      <div class="stat"><div class="k">В очереди</div><div class="v" id="s-queue">0</div></div>
-      <div class="stat"><div class="k">Отказов политики</div><div class="v red" id="s-blocks">0</div></div>
+      <div class="stat"><div class="k">Эффективная ставка</div><div class="v" id="s-rate">$0.00/ч</div></div>
+      <div class="stat"><div class="k">Оценка конвейера</div><div class="v blue" id="s-ev">$0.00</div></div>
+      <div class="stat"><div class="k">Часов залогировано</div><div class="v" id="s-hours">0</div></div>
+      <div class="stat"><div class="k">Отсеяно триажем</div><div class="v red" id="s-dropped">0</div></div>
     </div>
+    <div class="muted" style="margin-top:10px;font-size:11.5px" id="s-note"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Что делать сейчас — по убыванию ожидаемой ценности часа</h2>
+    <div id="next"></div>
   </div>
 
   <div class="grid">
     <div class="card">
-      <h2>Очередь возможностей</h2>
-      <div id="queue"><span class="muted">Пусто. Запустите цикл.</span></div>
+      <h2>Аудит-контесты (высокий потолок)</h2>
+      <div id="contests"></div>
     </div>
-
     <div class="card">
-      <h2>Журнал воркеров</h2>
-      <div class="log" id="log">—</div>
-      <h2 style="margin-top:16px">Бухгалтерия</h2>
-      <div id="payouts"></div>
-      <div class="row" style="margin-top:12px">
-        <input id="p-channel" placeholder="канал" value="github_bounties">
-        <input id="p-amount" placeholder="сумма" type="number" step="0.01">
-        <input id="p-evidence" placeholder="доказательство (tx/инвойс)" style="min-width:200px">
-        <button class="tiny" id="p-add">Добавить заявку</button>
-      </div>
-      <div class="reason">Доход попадает в «подтверждённый» только после проверки человеком.</div>
+      <h2>Не тратить время — и почему</h2>
+      <div id="lowvalue"></div>
     </div>
   </div>
 
-  <div class="grid" style="margin-top:16px">
+  <div class="card wide" style="margin-top:14px">
+    <h2>Очередь возможностей</h2>
+    <div id="queue"></div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
     <div class="card">
-      <h2>Разрешённые возможности политики</h2>
+      <h2>По каналам</h2>
+      <div id="channels"></div>
+    </div>
+    <div class="card">
+      <h2>Бухгалтерия</h2>
+      <div id="payouts"></div>
+      <div class="row" style="margin-top:10px">
+        <input id="p-channel" placeholder="канал" value="github_bounties">
+        <input id="p-amount" placeholder="сумма" type="number" step="0.01" style="min-width:80px">
+        <input id="p-evidence" placeholder="доказательство" style="min-width:150px">
+        <button class="tiny" id="p-add">Добавить заявку</button>
+      </div>
+      <div class="muted" style="font-size:11.5px;margin-top:8px">
+        Доход попадает в «подтверждённый» только после вашей проверки.
+      </div>
+    </div>
+    <div class="card">
+      <h2>Журнал воркеров</h2>
+      <div class="log" id="log">—</div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="card">
+      <h2>Политика: разрешено</h2>
       <div id="allowed"></div>
     </div>
     <div class="card">
@@ -248,109 +297,153 @@ PAGE = r"""<!doctype html>
       <div id="denied"></div>
     </div>
     <div class="card">
-      <h2>Разбор запроса</h2>
+      <h2>Разбор вашего запроса</h2>
       <div id="requested"></div>
     </div>
   </div>
 
   <div class="foot">
-    Ферма выполняет только работу, за которую платит внешний заказчик по публичным правилам.
-    Никаких капч, сибил-кошельков, airdrop-фарма и эксплуатации чужих систем: причины расписаны в блоке «Заблокировано».
+    Ферма работает только там, где платят за проверяемый результат по публичным правилам.
+    Никаких капч, сибил-кошельков, airdrop-фарма и эксплуатации чужих систем —
+    причины расписаны в блоке «Заблокировано».<br>
+    «Оценка конвейера» — это ожидаемая выручка из вероятности успеха и сумм наград, а не гарантия.
     Подтверждение выплаты — действие человека: <code>python -m agent.main payout-verify &lt;id&gt;</code>.
   </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const money = (v) => "$" + (v || 0).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const money = (v) => "$" + (Number(v) || 0).toLocaleString("en-US",
+  {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const triagePill = (t) => {
+  const map = {ready:"on", contested:"wait", paid:"off", closed:"off", assigned:"off"};
+  const cls = map[t] || "info";
+  return t ? `<span class="pill ${cls}">${esc(t)}</span>` : `<span class="pill info">нет триажа</span>`;
+};
 
 async function post(url, body) {
-  await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+  await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body || {})});
   refresh();
 }
-
 $("run").onclick = () => post("/api/run", {channel: $("channel").value || null});
 $("p-add").onclick = () => {
   const amount = parseFloat($("p-amount").value);
   if (!amount) return;
-  post("/api/payout", {
-    channel: $("p-channel").value || "manual",
-    amount: amount,
-    evidence: $("p-evidence").value || "",
-    note: "внесено через дашборд"
-  });
+  post("/api/payout", {channel: $("p-channel").value || "manual", amount: amount,
+                       evidence: $("p-evidence").value || "", note: "внесено через дашборд"});
   $("p-amount").value = ""; $("p-evidence").value = "";
 };
 
 async function refresh() {
-  let state;
-  try {
-    state = await (await fetch("/api/state")).json();
-  } catch (e) { return; }
+  let s;
+  try { s = await (await fetch("/api/state")).json(); } catch (e) { return; }
+  const L = s.ledger, A = s.stats, R = s.runner;
 
-  const L = state.ledger, R = state.runner;
-  $("s-verified").textContent = money(L.verified_usd);
-  $("s-claimed").textContent = money(L.claimed_usd);
-  $("s-opps").textContent = L.opportunities_total;
-  $("s-queue").textContent = L.opportunities_queued;
-  $("s-blocks").textContent = L.policy_blocks.length;
+  $("s-verified").textContent = money(A.verified_usd);
+  $("s-claimed").textContent = money(A.claimed_usd);
+  $("s-rate").innerHTML = money(A.effective_usd_per_hour) + "/ч";
+  $("s-rate").className = "v " + (A.effective_usd_per_hour >= 10 ? "green"
+      : (A.effective_usd_per_hour > 0 ? "amber" : "red"));
+  $("s-ev").textContent = money(A.pipeline_ev_usd) + " / " + money(A.pipeline_ev_per_hour) + "ч";
+  $("s-hours").textContent = A.hours_logged;
+  $("s-dropped").textContent = L.opportunities_dropped;
+  const maxEv = Math.max(1, ...(s.queue || []).map(q => q.ev_per_hour || 0));
+  $("s-note").textContent = `В очереди ${L.opportunities_queued} задач · привлекательных для работы: `
+    + `${A.attractive_count}, отклонено по ценности: ${A.rejected_count} · ` + A.estimate_note;
 
   const pill = $("runner-pill");
   if (R.running) { pill.className = "pill wait"; pill.textContent = "работает"; }
   else if (R.error) { pill.className = "pill off"; pill.textContent = "ошибка"; }
   else { pill.className = "pill on"; pill.textContent = "готов"; }
   $("run").disabled = R.running;
-
   $("log").textContent = R.log.length ? R.log.join("\n") : "—";
 
-  $("queue").innerHTML = state.queue.length ? state.queue.map(q => `
-    <div class="q">
-      <div class="t"><span class="score">[${q.score.toFixed(1)}]</span>
-        ${q.reward_usd ? `<b>${money(q.reward_usd)}</b>` : `<span class="muted">награда н/д</span>`}
-        ${q.url ? `<a href="${q.url}" target="_blank" rel="noopener">${esc(q.title)}</a>` : esc(q.title)}
+  $("next").innerHTML = s.next.length ? s.next.map((n, i) => `
+    <div class="item hot">
+      <div class="t"><b>${i+1}.</b> ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>` : esc(n.title)}</div>
+      <div class="m">
+        <b>${money(n.reward_usd)}</b> · плейбук ${esc(n.playbook)} · ${triagePill(n.triage)} ·
+        EV/час <b>${money(n.ev_per_hour)}</b> · оценка ${n.effort_hours}ч ·
+        ожидаемо ${money(n.expected_value_usd)}
       </div>
-      <div class="m">${esc(q.repo || q.channel)} · ${esc(q.rationale)}</div>
-    </div>`).join("") : '<span class="muted">Пусто. Запустите цикл.</span>';
+      <div class="m">${esc(n.why)}</div>
+      <div class="m">первый шаг: <code>python -m agent.main plan ${esc(n.id)}</code></div>
+    </div>`).join("")
+    : '<span class="muted">Пока нечего рекомендовать: запустите цикл или подождите свежих задач.</span>';
 
-  $("payouts").innerHTML = L.payouts.length ? `<table><tr><th>#</th><th>канал</th><th>сумма</th><th>статус</th><th></th></tr>
+  $("lowvalue").innerHTML = s.low_value.length ? s.low_value.map(v => `
+    <div class="item cold">
+      <div class="t">${esc(v.title)}</div>
+      <div class="m">${money(v.reward_usd)} · ${triagePill(v.triage)} · EV/час ${money(v.ev_per_hour)}
+        ${v.attempts != null ? ` · заявок ${v.attempts}` : ""}
+        ${v.open_prs ? ` · открытых PR ${v.open_prs}` : ""}</div>
+    </div>`).join("")
+    : '<span class="muted">Отклонённых задач нет.</span>';
+
+  $("contests").innerHTML = s.contests.length ? s.contests.map(c => `
+    <div class="item">
+      <div class="t">${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title)}</a>` : esc(c.title)}</div>
+      <div class="m">EV/час <b>${money(c.ev_per_hour)}</b> · оценка ${c.effort_hours}ч · ожидаемо ${money(c.expected_value_usd)}</div>
+      <div class="m">${esc(c.rationale)}</div>
+      <div class="bar"><i style="width:${Math.min(100, (c.ev_per_hour / maxEv) * 100)}%"></i></div>
+    </div>`).join("")
+    : '<span class="muted">Контесты не найдены. Запустите цикл.</span>';
+
+  $("queue").innerHTML = s.queue.length ? `<table>
+    <tr><th>EV/час</th><th>награда</th><th>задача</th><th>плейбук</th><th>триаж</th><th>конкуренция</th></tr>
+    ${s.queue.map(q => `<tr>
+      <td>${money(q.ev_per_hour)}</td>
+      <td>${money(q.reward_usd)}</td>
+      <td>${q.url ? `<a href="${esc(q.url)}" target="_blank" rel="noopener">${esc(q.title)}</a>` : esc(q.title)}
+          <div class="muted" style="font-size:11px">${esc(q.repo || q.channel)}</div></td>
+      <td>${esc(q.playbook || "—")}</td>
+      <td>${triagePill(q.triage)}</td>
+      <td>${q.attempts != null ? `заявок ${q.attempts}` : "—"}${q.open_prs ? ` · PR ${q.open_prs}` : ""}</td>
+    </tr>`).join("")}</table>` : '<span class="muted">Пусто. Запустите цикл.</span>';
+
+  $("channels").innerHTML = A.by_channel.length ? `<table>
+    <tr><th>канал</th><th>в очереди</th><th>заявлено</th><th>доход</th><th>$ / час</th></tr>
+    ${A.by_channel.map(c => `<tr>
+      <td>${esc(c.channel)}</td><td>${c.queued}</td><td>${money(c.advertised_usd)}</td>
+      <td>${money(c.verified_usd)}</td><td>${money(c.effective_usd_per_hour)}</td></tr>`).join("")}
+    </table>` : '<span class="muted">Нет данных.</span>';
+
+  $("payouts").innerHTML = L.payouts.length ? `<table>
+    <tr><th>#</th><th>канал</th><th>сумма</th><th>статус</th><th></th></tr>
     ${L.payouts.map(p => `<tr>
-      <td>${p.id}</td><td>${esc(p.channel)}</td><td>$${(p.amount || 0).toFixed(2)}</td>
+      <td>${p.id}</td><td>${esc(p.channel)}</td><td>${money(p.amount)}</td>
       <td>${p.verified ? '<span class="pill on">подтверждено</span>' : '<span class="pill wait">заявка</span>'}</td>
       <td>${p.verified ? "" : `<button class="tiny" onclick="post('/api/payout/verify',{id:${p.id}})">подтвердить</button>`}</td>
-    </tr>`).join("")}</table>` : '<span class="muted">выплат пока нет — это честнее, чем нарисованные цифры</span>';
+    </tr>`).join("")}</table>`
+    : '<span class="muted">выплат пока нет — это честнее, чем нарисованные цифры</span>';
 
-  $("allowed").innerHTML = state.farm.policy.allowed.map(a => `
-    <div style="margin-bottom:10px">
+  $("allowed").innerHTML = s.farm.policy.allowed.map(a => `
+    <div style="margin-bottom:9px">
       <span class="pill on">разрешено</span> ${esc(a.label)}
-      <div class="reason">${esc(a.note || "")}
-        ${a.requires_human ? ' · требуется подтверждение человека' : ''}
-        ${a.requires_authorization ? ' · требуется файл авторизации' : ''}
-      </div>
+      <div class="muted" style="font-size:11.5px">${esc(a.note || "")}
+        ${a.requires_human ? " · нужен человек" : ""}
+        ${a.requires_authorization ? " · нужен файл авторизации" : ""}</div>
     </div>`).join("");
 
-  $("denied").innerHTML = state.farm.policy.denied.map(d => `
-    <div style="margin-bottom:12px">
+  $("denied").innerHTML = s.farm.policy.denied.map(d => `
+    <div style="margin-bottom:11px">
       <span class="pill off">заблокировано</span> <b>${esc(d.label)}</b>
-      <div class="reason"><b>Почему не работает.</b> ${esc(d.why_it_fails)}</div>
-      <div class="reason"><b>Риск.</b> ${esc(d.risk)}</div>
-      <div class="reason"><b>Делать вместо этого.</b> ${esc(d.instead)}</div>
+      <div class="muted" style="font-size:11.5px"><b>Почему не работает.</b> ${esc(d.why_it_fails)}</div>
+      <div class="muted" style="font-size:11.5px"><b>Риск.</b> ${esc(d.risk)}</div>
+      <div class="muted" style="font-size:11.5px"><b>Вместо этого.</b> ${esc(d.instead)}</div>
     </div>`).join("");
 
-  $("requested").innerHTML = state.farm.requested.map(r => {
+  $("requested").innerHTML = s.farm.requested.map(r => {
     const cls = r.status === "allowed" ? "on" : (r.status.includes("human") ? "wait" : "off");
-    return `<div style="margin-bottom:10px">
+    return `<div style="margin-bottom:9px">
       <span class="pill ${cls}">${esc(r.status)}</span> <b>${esc(r.request)}</b>
-      <div class="reason">${esc(r.comment)}</div></div>`;
+      <div class="muted" style="font-size:11.5px">${esc(r.comment)}</div></div>`;
   }).join("");
 }
-
-function esc(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
-    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-}
-
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 2500);
 </script>
 </body>
 </html>
@@ -360,10 +453,8 @@ setInterval(refresh, 2000);
 class Handler(BaseHTTPRequestHandler):
     server_version = "AGENT-0"
 
-    def log_message(self, fmt: str, *args: Any) -> None:  # keep the console quiet
+    def log_message(self, fmt: str, *args: Any) -> None:
         pass
-
-    # ------------------------------------------------------------------ utils
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
@@ -374,8 +465,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, payload: Dict[str, Any], code: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self._send(code, body, "application/json; charset=utf-8")
+        self._send(code, json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"),
+                   "application/json; charset=utf-8")
 
     def _read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -386,17 +477,15 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
-    # ------------------------------------------------------------------- verbs
-
     def do_GET(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        if parsed.path in ("/", "/index.html"):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
             return
-        if parsed.path == "/api/state":
+        if path == "/api/state":
             self._json(collect_state())
             return
-        if parsed.path == "/health":
+        if path == "/health":
             self._json({"ok": True})
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
@@ -410,8 +499,7 @@ class Handler(BaseHTTPRequestHandler):
             channel = body.get("channel") or (query.get("channel", [None])[0])
             if channel in ("", "null", "None"):
                 channel = None
-            started = start_cycle(channel)
-            self._json({"started": started, "channel": channel})
+            self._json({"started": start_cycle(channel), "channel": channel})
             return
 
         if parsed.path == "/api/payout":

@@ -4,23 +4,37 @@ Responsibilities:
 
 1. decide which workers may run (policy gate) and which are refused;
 2. run the allowed workers, collecting opportunities;
-3. persist everything in the ledger;
-4. never let a worker touch the network if its capability is not allowed.
+3. **triage** the best candidates: is the bounty still claimed by nobody, and
+   will the payout actually reach the operator;
+4. re-score with the measured probability, persist everything in the ledger;
+5. never let a worker touch the network if its capability is not allowed.
 
-The orchestrator is intentionally boring: the interesting decisions live in
-``policy`` (what is allowed at all) and ``scoring`` (what is worth doing).
+Triage is what turns a list of "open bounty" links into a short list of work
+worth doing. It costs two GitHub calls per candidate, so it is applied only to
+the top ``TRIAGE_BUDGET`` items of a cycle, not to everything found.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.channels import ACTIVE_CHANNELS, DISABLED_CHANNELS, build_channel
 from agent.config import get_env, get_float
-from agent.ledger import Opportunity, record_action, record_run, upsert_opportunities
+from agent.ledger import (
+    Opportunity,
+    record_action,
+    record_run,
+    upsert_opportunities,
+)
 from agent.policy import REQUESTED_TACTICS, evaluate, report as policy_report
+from agent.scoring import score_opportunity
+from agent.triage import TriageClient
+
+#: Channels whose items support the /attempt + linked-PR triage.
+TRIAGEABLE = {"github_bounties"}
 
 
 @dataclass
@@ -28,6 +42,9 @@ class CycleResult:
     channels: List[Dict[str, Any]] = field(default_factory=list)
     found: int = 0
     kept: int = 0
+    dropped: int = 0
+    triaged: int = 0
+    pipeline_ev_usd: float = 0.0
     blocked: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -36,12 +53,102 @@ class CycleResult:
             "channels": self.channels,
             "found": self.found,
             "kept": self.kept,
+            "dropped": self.dropped,
+            "triaged": self.triaged,
+            "pipeline_ev_usd": round(self.pipeline_ev_usd, 2),
             "blocked": self.blocked,
             "notes": self.notes,
         }
 
 
-def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
+def _triage_items(items: List[Opportunity], budget: int) -> tuple[List[Opportunity], int, int]:
+    """Attach measured competition data to the most promising candidates.
+
+    Returns (items, triaged_count, dropped_count). Items whose bounty is already
+    paid or closed are marked ``dropped`` instead of ``queued``.
+    """
+    if budget <= 0 or not items:
+        return items, 0, 0
+
+    client = TriageClient(token=get_env("GITHUB_TOKEN", "") or "")
+    hourly_rate = get_float("OPERATOR_HOURLY_RATE", 15.0)
+    triaged = 0
+    dropped = 0
+
+    ordered = sorted(items, key=lambda o: o.score, reverse=True)
+    for item in ordered[:budget]:
+        number = 0
+        if "#" in item.id:
+            try:
+                number = int(item.id.rsplit("#", 1)[1])
+            except ValueError:
+                number = 0
+        if not number:
+            continue
+        triaged += 1
+        verdict = client.triage(
+            opportunity_id=item.id,
+            repo=item.repo,
+            number=number,
+            created_at=(item.payload or {}).get("created_at"),
+            updated_at=(item.payload or {}).get("updated_at"),
+            issue_state="open",
+        )
+
+        labels = list((item.payload or {}).get("labels") or [])
+        body = str((item.payload or {}).get("body") or "")
+        rescored = score_opportunity(
+            labels=labels,
+            title=item.title,
+            body=body,
+            comments=int((item.payload or {}).get("comments") or 0),
+            repo_stars=int((item.payload or {}).get("stars") or 0),
+            hourly_rate=hourly_rate,
+            triage_probability=verdict.probability,
+            verified_amount=verdict.verified_amount,
+            age_days=(item.payload or {}).get("age_days"),
+        )
+
+        item.score = rescored.total
+        item.reward_usd = rescored.reward_usd
+        item.reward_source = rescored.reward_source
+        item.rationale = rescored.rationale + " | триаж: " + "; ".join(verdict.notes or ["чисто"])
+        item.payload = {
+            **(item.payload or {}),
+            "triage": verdict.as_dict(),
+            "triage_verdict": verdict.verdict,
+            "triage_notes": verdict.notes,
+            "attempts": verdict.attempts,
+            "open_prs": verdict.open_prs,
+            "funder": verdict.funder,
+            "verified_amount": verdict.verified_amount,
+            "effort_hours": rescored.effort_hours,
+            "probability": verdict.probability,
+            "ev_per_hour": rescored.ev_per_hour,
+            "expected_value_usd": rescored.expected_value_usd,
+            "playbook": rescored.playbook,
+        }
+
+        if verdict.verdict in ("paid", "closed"):
+            item.status = "dropped"
+            dropped += 1
+            record_action(
+                item.channel,
+                "read_public_data",
+                item.id,
+                False,
+                f"триаж: {verdict.verdict} — {'; '.join(verdict.notes)}",
+            )
+
+    return items, triaged, dropped
+
+
+def run_channel(
+    name: str,
+    limit: int = 25,
+    triage_budget: Optional[int] = None,
+    do_triage: bool = True,
+) -> Dict[str, Any]:
     """Run a single worker. Refuses politely if policy says no."""
     channel = build_channel(name)
 
@@ -59,10 +166,10 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
             "requirements": channel.decision.requirements,
             "found": 0,
             "kept": 0,
+            "dropped": 0,
             "top": [],
         }
 
-    # Extra gate for channels that need an authorization file.
     if channel.decision.requirements:
         ready = getattr(channel, "ready", True)
         if not ready:
@@ -82,6 +189,7 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
                 "requirements": channel.decision.requirements,
                 "found": 0,
                 "kept": 0,
+                "dropped": 0,
                 "top": [],
             }
 
@@ -98,9 +206,21 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
             "allowed": True,
             "found": 0,
             "kept": 0,
+            "dropped": 0,
             "error": note,
             "top": [],
         }
+
+    budgets = {
+        "github_bounties": triage_budget
+        if triage_budget is not None
+        else int(get_env("TRIAGE_BUDGET", "6") or 6),
+        "audit_contests": 0,
+        "bug_recon": 0,
+    }
+    triaged = dropped = 0
+    if do_triage and name in TRIAGEABLE:
+        items, triaged, dropped = _triage_items(items, budgets.get(name, 0))
 
     kept = upsert_opportunities(items)
     elapsed = round(time.time() - started, 1)
@@ -110,7 +230,7 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
         found=len(items),
         kept=kept,
         policy="allowed",
-        note=f"{elapsed}s",
+        note=f"{elapsed}s, триаж {triaged}, отсеяно {dropped}",
     )
 
     top = [
@@ -122,8 +242,13 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
             "score": item.score,
             "rationale": item.rationale,
             "status": item.status,
+            "playbook": (item.payload or {}).get("playbook", ""),
+            "ev_per_hour": (item.payload or {}).get("ev_per_hour", 0.0),
+            "expected_value_usd": (item.payload or {}).get("expected_value_usd", 0.0),
+            "triage_verdict": (item.payload or {}).get("triage_verdict", ""),
         }
         for item in sorted(items, key=lambda o: o.score, reverse=True)[:10]
+        if item.status == "queued"
     ]
 
     return {
@@ -134,13 +259,19 @@ def run_channel(name: str, limit: int = 25) -> Dict[str, Any]:
         "ready": True,
         "found": len(items),
         "kept": kept,
+        "dropped": dropped,
+        "triaged": triaged,
         "elapsed_seconds": elapsed,
         "error": getattr(channel, "last_error", ""),
         "top": top,
     }
 
 
-def run_cycle(channels: Optional[List[str]] = None, limit: int = 25) -> CycleResult:
+def run_cycle(
+    channels: Optional[List[str]] = None,
+    limit: int = 25,
+    do_triage: bool = True,
+) -> CycleResult:
     """One pass over the farm."""
     names = channels or list(ACTIVE_CHANNELS.keys())
     result = CycleResult()
@@ -149,10 +280,14 @@ def run_cycle(channels: Optional[List[str]] = None, limit: int = 25) -> CycleRes
         if name not in ACTIVE_CHANNELS:
             result.notes.append(f"Неизвестный воркер: {name}")
             continue
-        outcome = run_channel(name, limit=limit)
+        outcome = run_channel(name, limit=limit, do_triage=do_triage)
         result.channels.append(outcome)
         result.found += int(outcome.get("found", 0))
         result.kept += int(outcome.get("kept", 0))
+        result.dropped += int(outcome.get("dropped", 0))
+        result.triaged += int(outcome.get("triaged", 0))
+        for item in outcome.get("top", []):
+            result.pipeline_ev_usd += float(item.get("expected_value_usd") or 0.0)
         if not outcome.get("allowed"):
             result.blocked.append(
                 {
@@ -165,6 +300,114 @@ def run_cycle(channels: Optional[List[str]] = None, limit: int = 25) -> CycleRes
             result.notes.append(f"{name}: {outcome['error']}")
 
     return result
+
+
+def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[Dict[str, Any]]:
+    """What the operator should actually do next, in order.
+
+    This is the farm's answer to "как сделать доход больше": not a bigger
+    harvest, but a short, ordered list of the highest expected value per hour,
+    with the exact next command for each item.
+
+    Items whose measured expected value per hour is below the floor are *not*
+    recommended. Showing them as "work worth doing" would be the same lie the
+    whole project is built to avoid — the honest place for them is the
+    "низкая ценность" list in ``low_value``.
+    """
+    from agent.ledger import connect
+
+    floor = min_ev_per_hour if min_ev_per_hour is not None else get_float("MIN_EV_PER_HOUR", 3.0)
+
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, channel, url, reward_usd, score, rationale, payload, status "
+            "FROM opportunities WHERE status='queued' ORDER BY score DESC LIMIT 60",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    actions: List[Dict[str, Any]] = []
+    for row in rows:
+        if len(actions) >= limit:
+            break
+        payload = row["payload"] or "{}"
+        try:
+            import json
+
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+        playbook = payload.get("playbook") or "generic"
+        verdict = payload.get("triage_verdict") or "нет триажа"
+        ev_hour = float(payload.get("ev_per_hour") or 0.0)
+        if ev_hour < floor:
+            continue
+        steps = [
+            f"python -m agent.main plan {row['id']}",
+            "сделать работу по плану",
+            f"python -m agent.main hours-add --channel {row['channel']} --hours N --id {row['id']}",
+            f"python -m agent.main payout-add --channel {row['channel']} --amount X --evidence 'PR #N merged'",
+        ]
+        actions.append(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "channel": row["channel"],
+                "url": row["url"],
+                "reward_usd": row["reward_usd"],
+                "score": row["score"],
+                "playbook": playbook,
+                "triage": verdict,
+                "ev_per_hour": ev_hour,
+                "expected_value_usd": payload.get("expected_value_usd", 0.0),
+                "effort_hours": payload.get("effort_hours", 0.0),
+                "why": row["rationale"],
+                "next": steps,
+            }
+        )
+    return actions
+
+
+def low_value(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Items the farm deliberately does NOT recommend, and why."""
+    from agent.ledger import connect
+
+    floor = min_ev_per_hour if min_ev_per_hour is not None else get_float("MIN_EV_PER_HOUR", 3.0)
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, channel, reward_usd, score, rationale, payload "
+            "FROM opportunities WHERE status='queued' ORDER BY score DESC LIMIT 60",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        ev_hour = float(payload.get("ev_per_hour") or 0.0)
+        if ev_hour >= floor:
+            continue
+        items.append(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "channel": row["channel"],
+                "reward_usd": row["reward_usd"],
+                "score": row["score"],
+                "ev_per_hour": ev_hour,
+                "triage": payload.get("triage_verdict") or "нет триажа",
+                "attempts": payload.get("attempts"),
+                "open_prs": payload.get("open_prs"),
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
 
 
 def disabled_report() -> List[Dict[str, Any]]:
@@ -187,10 +430,22 @@ def disabled_report() -> List[Dict[str, Any]]:
     return disabled
 
 
+def channel_status() -> List[Dict[str, Any]]:
+    """Status of every registered worker, allowed or not."""
+    statuses: List[Dict[str, Any]] = []
+    for name in ACTIVE_CHANNELS:
+        channel = build_channel(name)
+        status = channel.status()
+        status["ready"] = getattr(channel, "ready", True)
+        statuses.append(status)
+    return statuses
+
+
 def overview() -> Dict[str, Any]:
     """Full farm state, used by the dashboard and `python -m agent.main status`."""
     return {
-        "channels": disabled_report(),
+        "channels": channel_status(),
+        "disabled": disabled_report(),
         "policy": policy_report(),
         "requested": [
             {
@@ -202,6 +457,6 @@ def overview() -> Dict[str, Any]:
             for r in REQUESTED_TACTICS
         ],
         "hourly_rate": get_float("OPERATOR_HOURLY_RATE", 15.0),
+        "triage_budget": int(get_env("TRIAGE_BUDGET", "6") or 6),
         "min_score": get_float("MIN_SCORE", 0.0),
-        "timeout_seconds": int(get_env("HTTP_TIMEOUT", "20") or 20),
     }
