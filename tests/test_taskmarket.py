@@ -549,3 +549,66 @@ def test_dropped_task_can_be_returned_by_removing_the_line(
     set_status("taskmarket:0xgpu", "dropped", note="нужен NVIDIA GPU")
     assert farm.next_actions(limit=5, min_ev_per_hour=3.0) == []
     assert veto.reason("taskmarket:0xgpu") == ""
+
+
+# --- сроки задач ---------------------------------------------------------------
+
+def test_deadline_label_speaks_human_words() -> None:
+    from agent.farm import deadline_label
+
+    assert deadline_label(None) == ""
+    assert deadline_label(0) == "срок истёк"
+    assert deadline_label(-3) == "срок истёк"
+    assert deadline_label(0.4) == "меньше часа"
+    assert deadline_label(5) == "осталось 5 ч"
+    assert deadline_label(50) == "осталось 2 дн."
+
+
+def test_next_actions_carries_the_task_deadline(monkeypatch, tmp_path) -> None:
+    from agent import farm
+    from agent.ledger import Opportunity, upsert_opportunities
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "d.db"))
+    upsert_opportunities([Opportunity(
+        id="taskmarket:0xdead", channel="taskmarket", title="Задача с таймером",
+        reward_usd=50.0, payload={"ev_per_hour": 9.0, "hours_left": 20.0},
+    )])
+    actions = farm.next_actions(limit=5, min_ev_per_hour=3.0)
+    assert actions[0]["hours_left"] == 20.0
+
+
+def test_next_warns_when_the_deadline_is_close(monkeypatch, capsys) -> None:
+    """Человек должен узнать о конце срока до площадки, а не от площадки."""
+    from agent import main
+
+    monkeypatch.setattr(main, "next_actions", lambda limit=5: [{
+        "id": "taskmarket:0xdead", "title": "Задача с таймером", "channel": "taskmarket",
+        "url": "https://taskmarket.dev/tasks/0xdead", "reward_usd": 50.0, "score": 5.0,
+        "playbook": "generic", "triage": "ready", "ev_per_hour": 9.0,
+        "expected_value_usd": 40.0, "effort_hours": 4.0, "why": "свежая",
+        "next": ["открыть задачу"], "age_hours": 3.0, "hours_left": 6.0,
+        "is_new": True,
+    }])
+    assert main.cmd_next(main.argparse.Namespace(limit=5, command="next")) == 0
+    assert "осталось 6 ч" in capsys.readouterr().out
+
+
+def test_dashboard_counts_tasks_that_close_today(monkeypatch, tmp_path) -> None:
+    """Плитка дашборда: сколько задач закроется в ближайшие сутки."""
+    from agent import dashboard, snapshots
+
+    snapshot_file(tmp_path, 1.0, [
+        {"id": "0xa", "title": "Скоро закроется", "reward_usd": 40.0, "submissions": 1,
+         "hours_left": 6.0, "url": "https://taskmarket.dev/tasks/0xa"},
+        {"id": "0xb", "title": "Ещё есть время", "reward_usd": 80.0, "submissions": 0,
+         "hours_left": 100.0, "url": "https://taskmarket.dev/tasks/0xb"},
+        {"id": "0xc", "title": "Без срока", "reward_usd": 10.0, "submissions": 3,
+         "hours_left": None, "url": "https://taskmarket.dev/tasks/0xc"},
+    ])
+    monkeypatch.setattr(snapshots, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(dashboard, "_TASKMARKET", {"data": None, "at": 0.0})
+
+    state = dashboard._taskmarket(ttl=0.0)
+    assert state["task_count"] == 3
+    assert state["free_slots"] == 2, "без толпы — там, где прислано не больше двух работ"
+    assert state["expiring_soon"] == 1, "сутки — это hours_left 0 < x <= 24"

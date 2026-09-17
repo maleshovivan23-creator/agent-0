@@ -45,7 +45,8 @@ from agent import inbox as inbox_mod
 from agent.channels import build_channel
 from agent import eligibility, hansa, payouts, quests, wallet
 from agent.config import get_env, load_environment, project_root
-from agent.farm import floor_report, next_actions, overview, run_cycle
+from agent.farm import (DEADLINE_URGENT_HOURS, deadline_label, floor_report,
+                      next_actions, overview, run_cycle)
 from agent.ledger import (
     analytics,
     connect,
@@ -167,6 +168,11 @@ def cmd_next(args: argparse.Namespace) -> int:
                 badge = paint(f"  {age:.0f}ч", YELLOW)
             else:
                 badge = paint(f"  {age / 24:.0f} дн. в очереди", RED)
+        label = deadline_label(item.get("hours_left"))
+        if label:
+            urgent = (item.get("hours_left") is not None
+                      and item["hours_left"] <= DEADLINE_URGENT_HOURS)
+            badge += paint(f"  {label}", RED if urgent else YELLOW)
         print(f"{index}. {paint(item['title'][:70], BOLD)}{badge}")
         print(f"   {reward} · плейбук {item['playbook']} · триаж {item['triage']} · "
               f"EV/час ~{money(item['ev_per_hour'])} · оценка {item['effort_hours']}ч")

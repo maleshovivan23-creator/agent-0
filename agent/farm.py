@@ -530,10 +530,16 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
         except (IndexError, KeyError):
             first_seen = None
         age = age_hours(first_seen or payload.get("first_seen"))
+        hours_left = payload.get("hours_left")
+        try:
+            hours_left = float(hours_left) if hours_left is not None else None
+        except (TypeError, ValueError):
+            hours_left = None
         actions.append(
             {
                 "id": row["id"],
                 "age_hours": age,
+                "hours_left": hours_left,
                 "is_new": age is not None and age <= 24.0,
                 "title": row["title"],
                 "channel": row["channel"],
@@ -550,6 +556,29 @@ def next_actions(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> Lis
             }
         )
     return actions
+
+
+#: За сколько часов до конца задачи человека надо предупредить. Сутки — уже
+#: поздно начинать, трое — последний момент, когда работа ещё имеет смысл.
+DEADLINE_WARN_HOURS = 72.0
+DEADLINE_URGENT_HOURS = 24.0
+
+
+def deadline_label(hours_left: Optional[float]) -> str:
+    """«осталось 5 ч» — короткая подпись срока. Пустая строка, если срок неизвестен.
+
+    Задачи площадок исчезают по таймеру, а не по нашей воле: без этой подписи
+    человек узнаёт о конце срока из отказа площадки.
+    """
+    if hours_left is None:
+        return ""
+    if hours_left <= 0:
+        return "срок истёк"
+    if hours_left < 1:
+        return "меньше часа"
+    if hours_left < 48:
+        return f"осталось {hours_left:.0f} ч"
+    return f"осталось {hours_left / 24:.0f} дн."
 
 
 def refused_actions(limit: int = 10) -> List[Dict[str, str]]:
@@ -586,11 +615,17 @@ def low_value(limit: int = 5, min_ev_per_hour: Optional[float] = None) -> List[D
         ev_hour = float(payload.get("ev_per_hour") or 0.0)
         if ev_hour >= floor:
             continue
+        hours_left = payload.get("hours_left")
+        try:
+            hours_left = float(hours_left) if hours_left is not None else None
+        except (TypeError, ValueError):
+            hours_left = None
         items.append(
             {
                 "id": row["id"],
                 "title": row["title"],
                 "channel": row["channel"],
+                "hours_left": hours_left,
                 "reward_usd": row["reward_usd"],
                 "score": row["score"],
                 "ev_per_hour": ev_hour,

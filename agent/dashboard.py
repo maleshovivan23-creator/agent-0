@@ -189,6 +189,13 @@ def _taskmarket(ttl: float = 60.0) -> Dict[str, Any]:
                 "task_count": len(rows),
                 "best_reward": rows[0]["reward_usd"] if rows else 0.0,
                 "free_slots": sum(1 for row in rows if row["submissions"] <= 2),
+                # Срок — единственное, что нельзя доделать после дедлайна: сколько
+                # задач закроется в ближайшие сутки, видно сразу.
+                "expiring_soon": sum(
+                    1 for row in rows
+                    if isinstance(row.get("hours_left"), (int, float))
+                    and 0 < float(row["hours_left"]) <= 24
+                ),
             }
         except Exception as exc:  # дашборд не должен падать из-за отчёта
             _TASKMARKET["data"] = {"problem": f"{exc.__class__.__name__}: {exc}", "tasks": []}
@@ -551,7 +558,9 @@ function renderTaskmarket(t) {
     <div class="item ${t.stale ? "cold" : "hot"}">
       <div class="t"><span class="pill ${cls}">${label}</span>
         <b>Taskmarket: задач ${t.task_count}</b> · лучшая ${money(t.best_reward)} ·
-        без толпы ${t.free_slots} · снято ${esc(age)}</div>
+        без толпы ${t.free_slots}` +
+      (t.expiring_soon ? ` · <span class="pill wait">закроется за сутки: ${t.expiring_soon}</span>` : "") +
+      ` · снято ${esc(age)}</div>
       <div class="m">Платит USDC на Base в кошелёк, ключ площадки не нужен.
         Отправку работы делает человек — робот готовит текст и доказательство.</div>
     </div>
