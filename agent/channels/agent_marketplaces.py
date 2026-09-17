@@ -31,7 +31,6 @@ from typing import Any, Dict, List, Optional
 from agent import hansa
 from agent.channels.base import Channel
 from agent.config import get_env
-from agent.http import build_session
 from agent.ledger import Opportunity
 
 #: Documented AgentHansa routes (agent API, Bearer auth).
@@ -76,11 +75,16 @@ class AgentMarketplacesChannel(Channel):
         return get_env(env_name, "") or ""
 
     def _session(self, platform: str):
+        """Сессия собирается там же, где всё остальное общение с площадкой.
+
+        Раньше канал делал свою сессию, и тесты подменяли сеть в одном месте,
+        а код ходил через другое — ошибка вылезала только на живом запуске.
+        """
         key = self.api_key(platform)
         headers = {"Accept": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        return build_session(f"AGENT-0-agent-marketplace/{platform}", headers)
+        return hansa.build_session(f"AGENT-0-agent-marketplace/{platform}", headers)
 
     # -------------------------------------------------------------- harvesting
 
@@ -116,6 +120,12 @@ class AgentMarketplacesChannel(Channel):
             quests = client.quests()
         except hansa.HansaError as exc:
             self.last_error = f"AgentHansa: {exc}"
+            return []
+        except Exception as exc:
+            # Сеть до площадки может отвалиться целиком (в песочнице разработки
+            # домен вообще закрыт). Обещание модуля — деградировать честно:
+            # канал сообщает причину и не валит весь цикл фермы.
+            self.last_error = f"AgentHansa недоступна: {exc.__class__.__name__}: {exc}"
             return []
 
         if not quests:

@@ -32,6 +32,7 @@ COMMAND_ARGS: Dict[str, List[str]] = {
     "policy": [],
     "whoami": [],
     "wallet": ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"],
+    "hansa": ["статус"],
     "report": [],
     "contests": [],
     "learning": [],
@@ -66,7 +67,7 @@ LONG_RUNNING = {"loop": [], "serve": []}
 #: настройки) — для них важен не код возврата, а отсутствие падения.
 ALWAYS_RUN = {
     "status", "next", "queue", "directions", "analytics", "ledger", "policy",
-    "whoami", "report", "contests", "learning", "watchdog", "inbox", "inbox-done", "wallet",
+    "whoami", "report", "contests", "learning", "watchdog", "inbox", "inbox-done", "wallet", "hansa",
     "inbox-skip", "payout-rails", "eligibility", "doctor", "setup", "shift",
     "cycle", "autopilot", "followup", "triage",
 }

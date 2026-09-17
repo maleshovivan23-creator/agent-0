@@ -19,15 +19,24 @@ class FakeResponse:
 
 
 class FakeSession:
+    """Отвечает на любые запросы одним и тем же телом.
+
+    Клиент площадки ходит через ``request`` (единая точка), поэтому заглушка
+    обязана уметь и его: раньше канал делал запросы сам и хватало ``get``.
+    """
+
     def __init__(self, payload: Any, status_code: int = 200) -> None:
         self.payload = payload
         self.status_code = status_code
         self.headers: Dict[str, str] = {}
         self.calls: List[str] = []
 
-    def get(self, url: str, params: Any = None, timeout: int = 0) -> FakeResponse:
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append(url)
         return FakeResponse(self.payload, self.status_code)
+
+    def get(self, url: str, params: Any = None, timeout: int = 0) -> FakeResponse:
+        return self.request("GET", url, params=params, timeout=timeout)
 
 
 def channel_with(payload: Any, status_code: int = 200) -> AgentMarketplacesChannel:
@@ -98,6 +107,9 @@ def test_unreachable_platform_degrades_gracefully(monkeypatch: pytest.MonkeyPatc
     def broken(platform: str) -> Any:
         class Boom:
             headers: Dict[str, str] = {}
+
+            def request(self, *args: Any, **kwargs: Any) -> Any:
+                raise OSError("network down")
 
             def get(self, *args: Any, **kwargs: Any) -> Any:
                 raise OSError("network down")

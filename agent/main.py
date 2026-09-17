@@ -1183,8 +1183,11 @@ def cmd_hansa(args: argparse.Namespace) -> int:
                   f"множитель выплаты {reputation.get('payout_multiplier', '—')}")
             print(f"  Баланс: ${me.get('balance', '0')} · XP {me.get('xp', '—')} · "
                   f"очки {points.get('balance', points.get('points', '—'))}")
-            wallet = me.get("wallet_address") or me.get("fluxa_agent_id") or ""
-            print(f"  Кошелёк: {wallet or 'не привязан (выплата держится 3-7 дней)'}")
+            # Имя переменной не должно совпадать с модулем agent.wallet: иначе
+            # Python считает его локальным во всей функции и ветка «кошелёк»
+            # падает с UnboundLocalError (это ловилось тестом).
+            bound_wallet = me.get("wallet_address") or me.get("fluxa_agent_id") or ""
+            print(f"  Кошелёк: {bound_wallet or 'не привязан (выплата держится 3-7 дней)'}")
             total = earnings.get("total_usd", earnings.get("total", 0))
             print(f"  Заработано всего: ${total or 0} · выплат записей: {len(payouts)}")
             return 0
@@ -1417,6 +1420,7 @@ ALIASES: Dict[str, str] = {
     "выплата-подтвердить": "payout-verify",
     "бухгалтерия": "ledger",
     "правила": "policy",
+    "политика": "policy",
     "кто-я": "whoami",
     "кошелёк": "wallet",
     "площадка": "hansa",
