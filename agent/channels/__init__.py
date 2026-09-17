@@ -15,12 +15,14 @@ from agent.channels.audit_contests import AuditContestsChannel
 from agent.channels.base import Channel
 from agent.channels.bug_recon import BugReconChannel
 from agent.channels.github_bounties import GitHubBountyChannel
+from agent.channels.taskmarket import TaskMarketChannel
 
 #: Workers the farm can actually run today.
 ACTIVE_CHANNELS: Dict[str, Type[Channel]] = {
     GitHubBountyChannel.name: GitHubBountyChannel,
     AuditContestsChannel.name: AuditContestsChannel,
     AgentMarketplacesChannel.name: AgentMarketplacesChannel,
+    TaskMarketChannel.name: TaskMarketChannel,
     BugReconChannel.name: BugReconChannel,
 }
 

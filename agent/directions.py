@@ -17,7 +17,7 @@ the ledger and says where the next hour is worth spending.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from agent.ledger import analytics, connect
@@ -33,6 +33,9 @@ class Direction:
     ceiling: str
     payout_rail: str
     next_step: str
+    #: Дополнительные каналы того же направления: у «без банка» их два —
+    #: AgentHansa (квесты по API) и Taskmarket (задачи в USDC на Base).
+    extra_channels: List[str] = field(default_factory=list)
     tasks: int = 0
     ev_per_hour: float = 0.0
     pipeline_hours: float = 0.0
@@ -46,6 +49,7 @@ class Direction:
             "key": self.key,
             "title": self.title,
             "channel": self.channel,
+            "channels": [self.channel, *self.extra_channels],
             "promise": self.promise,
             "entry_cost": self.entry_cost,
             "ceiling": self.ceiling,
@@ -86,11 +90,13 @@ DIRECTIONS: List[Direction] = [
         key="no_bank",
         title="3. Без банка: площадки для агентов",
         channel="agent_marketplaces",
+        extra_channels=["taskmarket"],
         promise="выплата в USDC не зависит от страны и Stripe",
-        entry_cost="минимальный: API-ключ, кошелёк",
-        ceiling="$10–$500 за квест; регулярность важнее размера",
-        payout_rail="usdc_wallet (USDC на Base, минимум 10 USDC)",
-        next_step="получить AGENTHANSA_API_KEY и добавить в .env",
+        entry_cost="минимальный: ключ площадки и кошелёк (Taskmarket читается без ключа)",
+        ceiling="$2–$500 за задачу; регулярность важнее размера",
+        payout_rail="usdc_wallet (USDC на Base)",
+        next_step="получить AGENTHANSA_API_KEY и добавить в .env; задачи Taskmarket "
+                  "уже в очереди",
     ),
 ]
 
@@ -146,19 +152,25 @@ def portfolio() -> Dict[str, Any]:
     directions: List[Direction] = []
     for template in DIRECTIONS:
         item = Direction(**{k: v for k, v in template.__dict__.items()})
-        channel_stats = stats.get(item.channel, {})
-        item.tasks = int(channel_stats.get("tasks", 0))
-        item.ev_per_hour = round(float(channel_stats.get("best", 0.0)), 2)
-        item.pipeline_hours = round(float(channel_stats.get("hours", 0.0)), 1)
-        item.hours_logged = round(hours_by_channel.get(item.channel, 0.0), 1)
+        # Направление может держать несколько каналов: складываем их, иначе
+        # площадка Taskmarket не попала бы ни в одну строку отчёта.
+        channels = [item.channel, *item.extra_channels]
+        channel_stats: Dict[str, float] = {"tasks": 0, "best": 0.0, "hours": 0.0}
+        channel_stats["tasks"] = sum(int(stats.get(name, {}).get("tasks", 0))
+                                     for name in channels)
+        channel_stats["best"] = max([float(stats.get(name, {}).get("best", 0.0))
+                                     for name in channels] or [0.0])
+        channel_stats["hours"] = sum(float(stats.get(name, {}).get("hours", 0.0))
+                                     for name in channels)
+        item.tasks = int(channel_stats["tasks"])
+        item.ev_per_hour = round(float(channel_stats["best"]), 2)
+        item.pipeline_hours = round(float(channel_stats["hours"]), 1)
+        item.hours_logged = round(sum(hours_by_channel.get(name, 0.0) for name in channels), 1)
         item.verified_usd = round(
-            next(
-                (
-                    row["verified_usd"]
-                    for row in income["by_channel"]
-                    if row["channel"] == item.channel
-                ),
-                0.0,
+            sum(
+                row["verified_usd"]
+                for row in income["by_channel"]
+                if row["channel"] in channels
             ),
             2,
         )
