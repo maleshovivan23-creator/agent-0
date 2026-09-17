@@ -30,6 +30,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
+from agent import payouts as payout_rails
+from agent.config import get_env
 from agent.farm import low_value, next_actions, overview, run_cycle
 from agent.ledger import (
     analytics,
@@ -137,10 +139,14 @@ def collect_state() -> Dict[str, Any]:
             "log": list(_RUNNER["log"]),
         }
 
+    country = (get_env("ELIGIBILITY_COUNTRY", "") or "").upper()
     return {
         "ledger": ledger,
         "stats": stats,
         "farm": farm,
+        "money": payout_rails.recommend(country).as_dict() if country else None,
+        "rails": payout_rails.table(),
+        "country": country,
         "queue": queue,
         "contests": contests,
         "next": next_actions(limit=5),
@@ -223,6 +229,7 @@ PAGE = r"""<!doctype html>
       <option value="">все воркеры</option>
       <option value="github_bounties">GitHub bounty</option>
       <option value="audit_contests">Аудит-контесты</option>
+      <option value="agent_marketplaces">Площадки для агентов</option>
       <option value="bug_recon">Разведка (нужен scope)</option>
     </select>
     <button id="run" class="primary">Запустить цикл</button>
@@ -240,6 +247,26 @@ PAGE = r"""<!doctype html>
       <div class="stat"><div class="k">Отсеяно триажем</div><div class="v red" id="s-dropped">0</div></div>
     </div>
     <div class="muted" style="margin-top:10px;font-size:11.5px" id="s-note"></div>
+  </div>
+
+  <div class="card wide" style="margin-bottom:14px">
+    <h2>Три направления — работают параллельно</h2>
+    <div id="directions"></div>
+    <div class="muted" style="font-size:11.5px;margin-top:6px" id="advice"></div>
+  </div>
+
+  <div class="grid" style="margin-bottom:14px">
+    <div class="card wide">
+      <h2>Как получить деньги</h2>
+      <div class="row" style="margin-bottom:10px">
+        <input id="country" placeholder="страна, напр. RU или DE" maxlength="2" style="min-width:150px">
+        <button class="tiny" id="check-country">Проверить</button>
+        <span class="muted" style="font-size:11.5px">
+          Stripe-выплаты (Algora, Opire) работают не во всех странах — это проверяется здесь.
+        </span>
+      </div>
+      <div id="money"></div>
+    </div>
   </div>
 
   <div class="card wide" style="margin-bottom:14px">
@@ -328,6 +355,44 @@ async function post(url, body) {
   refresh();
 }
 $("run").onclick = () => post("/api/run", {channel: $("channel").value || null});
+$("check-country").onclick = () => loadMoney(($("country").value || "").trim().toUpperCase());
+$("country").addEventListener("keydown", (e) => { if (e.key === "Enter") $("check-country").click(); });
+
+async function loadMoney(country) {
+  const url = "/api/payouts" + (country ? ("?country=" + encodeURIComponent(country)) : "");
+  try {
+    const data = await (await fetch(url)).json();
+    renderMoney(data);
+  } catch (e) { /* keep previous view */ }
+}
+
+function renderMoney(data) {
+  if (!data || !data.country) {
+    $("money").innerHTML = '<span class="muted">Укажите страну — покажем рабочие каналы получения денег '
+      + 'и то, что заведомо не сработает.</span>';
+    return;
+  }
+  const rails = data.rails || {};
+  const blocked = (data.blocked || []).map(k => `<div class="item cold" style="margin-bottom:8px">
+      <span class="pill off">не работает</span> <b>${esc(rails[k] ? rails[k].title : k)}</b>
+      <div class="m">${esc(rails[k] ? rails[k].summary : "")}</div></div>`).join("");
+  const recommended = (data.recommended || []).map(k => {
+    const r = rails[k];
+    if (!r) return "";
+    return `<div class="item hot">
+      <div class="t"><span class="pill on">рабочий канал</span> <b>${esc(r.title)}</b></div>
+      <div class="m">${esc(r.summary)}</div>
+      <div class="m">Требуется: ${esc((r.requires || []).join(", ") || "ничего особенного")} · Стоимость: ${esc(r.costs)}</div>
+      <div class="m">${(r.steps || []).map(s => "· " + esc(s)).join("<br>")}</div>
+      <div class="m">Ломается, если: ${esc((r.breaks_when || []).join("; "))}</div>
+      <div class="m"><a href="${esc(r.source)}" target="_blank" rel="noopener">источник</a></div>
+    </div>`;
+  }).join("");
+  const notes = (data.notes || []).map(n => `<div class="m">• ${esc(n)}</div>`).join("");
+  $("money").innerHTML = `<div class="muted" style="font-size:11.5px;margin-bottom:8px">
+      Страна: <b>${esc(data.country)}</b> · проверено ${esc(data.verified_on)}
+      (не юридическая консультация)</div>${blocked}${recommended}${notes}`;
+}
 $("p-add").onclick = () => {
   const amount = parseFloat($("p-amount").value);
   if (!amount) return;
@@ -359,6 +424,20 @@ async function refresh() {
   else { pill.className = "pill on"; pill.textContent = "готов"; }
   $("run").disabled = R.running;
   $("log").textContent = R.log.length ? R.log.join("\n") : "—";
+
+  const D = s.farm.directions || {directions: [], advice: []};
+  $("directions").innerHTML = (D.directions || []).map(d => `
+    <div class="item ${d.ev_per_hour >= 10 ? "hot" : ""}">
+      <div class="t"><b>${esc(d.title)}</b> <span class="pill info">${(d.share * 100).toFixed(0)}% времени</span></div>
+      <div class="m">${esc(d.promise)}</div>
+      <div class="m">Потолок: ${esc(d.ceiling)} · вход: ${esc(d.entry_cost)}</div>
+      <div class="m">Выплата: ${esc(d.payout_rail)}</div>
+      <div class="m">Сейчас: <b>${esc(d.status)}</b>
+        ${d.ev_per_hour ? ` · лучший EV/час <b>${money(d.ev_per_hour)}</b>` : ""}
+        ${d.verified_usd ? ` · заработано ${money(d.verified_usd)}` : ""}</div>
+      <div class="m">${esc(d.next_step)}</div>
+    </div>`).join("");
+  $("advice").innerHTML = (D.advice || []).map(a => "• " + esc(a)).join("<br>");
 
   $("next").innerHTML = s.next.length ? s.next.map((n, i) => `
     <div class="item hot">
@@ -481,6 +560,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if path == "/api/payouts":
+            query = parse_qs(parsed.query) if (parsed := urlparse(self.path)) else {}
+            country = (query.get("country", [""])[0] or get_env("ELIGIBILITY_COUNTRY", "") or "").upper()
+            assessment = payout_rails.recommend(country).as_dict()
+            assessment["rails"] = {item["key"]: item for item in payout_rails.table()}
+            self._json(assessment)
             return
         if path == "/api/state":
             self._json(collect_state())

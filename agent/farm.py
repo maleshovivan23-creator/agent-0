@@ -17,7 +17,9 @@ the top ``TRIAGE_BUDGET`` items of a cycle, not to everything found.
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +37,9 @@ from agent.triage import TriageClient
 
 #: Channels whose items support the /attempt + linked-PR triage.
 TRIAGEABLE = {"github_bounties"}
+
+#: SQLite writes are serialised across worker threads; harvesting stays parallel.
+_DB_LOCK = threading.Lock()
 
 
 @dataclass
@@ -216,22 +221,24 @@ def run_channel(
         if triage_budget is not None
         else int(get_env("TRIAGE_BUDGET", "6") or 6),
         "audit_contests": 0,
+        "agent_marketplaces": 0,
         "bug_recon": 0,
     }
     triaged = dropped = 0
     if do_triage and name in TRIAGEABLE:
         items, triaged, dropped = _triage_items(items, budgets.get(name, 0))
 
-    kept = upsert_opportunities(items)
     elapsed = round(time.time() - started, 1)
-    record_run(
-        name,
-        channel.capability,
-        found=len(items),
-        kept=kept,
-        policy="allowed",
-        note=f"{elapsed}s, триаж {triaged}, отсеяно {dropped}",
-    )
+    with _DB_LOCK:
+        kept = upsert_opportunities(items)
+        record_run(
+            name,
+            channel.capability,
+            found=len(items),
+            kept=kept,
+            policy="allowed",
+            note=f"{elapsed}s, триаж {triaged}, отсеяно {dropped}",
+        )
 
     top = [
         {
@@ -263,6 +270,7 @@ def run_channel(
         "triaged": triaged,
         "elapsed_seconds": elapsed,
         "error": getattr(channel, "last_error", ""),
+        "notes": list(getattr(channel, "notes", []) or []),
         "top": top,
     }
 
@@ -271,16 +279,36 @@ def run_cycle(
     channels: Optional[List[str]] = None,
     limit: int = 25,
     do_triage: bool = True,
+    parallel: bool = True,
 ) -> CycleResult:
-    """One pass over the farm."""
+    """One pass over the farm.
+
+    The three earning directions are harvested in parallel: each worker spends
+    most of its time waiting on HTTP, so running them together cuts a cycle down
+    to the duration of the slowest one. Persistence is serialised.
+    """
     names = channels or list(ACTIVE_CHANNELS.keys())
     result = CycleResult()
 
+    valid = [name for name in names if name in ACTIVE_CHANNELS]
     for name in names:
         if name not in ACTIVE_CHANNELS:
             result.notes.append(f"Неизвестный воркер: {name}")
-            continue
-        outcome = run_channel(name, limit=limit, do_triage=do_triage)
+
+    outcomes: List[Dict[str, Any]] = []
+    if parallel and len(valid) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(valid))) as pool:
+            futures = [pool.submit(run_channel, name, limit, None, do_triage) for name in valid]
+            for future in futures:
+                try:
+                    outcomes.append(future.result())
+                except Exception as exc:  # a worker must never kill the cycle
+                    result.notes.append(f"воркер упал: {exc.__class__.__name__}: {exc}")
+    else:
+        for name in valid:
+            outcomes.append(run_channel(name, limit=limit, do_triage=do_triage))
+
+    for outcome in outcomes:
         result.channels.append(outcome)
         result.found += int(outcome.get("found", 0))
         result.kept += int(outcome.get("kept", 0))
@@ -291,13 +319,15 @@ def run_cycle(
         if not outcome.get("allowed"):
             result.blocked.append(
                 {
-                    "channel": name,
+                    "channel": outcome.get("name"),
                     "capability": outcome.get("capability"),
                     "reason": outcome.get("policy_reason"),
                 }
             )
         if outcome.get("error"):
-            result.notes.append(f"{name}: {outcome['error']}")
+            result.notes.append(f"{outcome.get('name')}: {outcome['error']}")
+        for note in outcome.get("notes", []):
+            result.notes.append(f"{outcome.get('name')}: {note}")
 
     return result
 
@@ -443,7 +473,10 @@ def channel_status() -> List[Dict[str, Any]]:
 
 def overview() -> Dict[str, Any]:
     """Full farm state, used by the dashboard and `python -m agent.main status`."""
+    from agent.directions import portfolio
+
     return {
+        "directions": portfolio(),
         "channels": channel_status(),
         "disabled": disabled_report(),
         "policy": policy_report(),

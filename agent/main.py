@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from agent import eligibility
+from agent import eligibility, payouts
 from agent.config import get_env, load_environment, project_root
 from agent.farm import next_actions, overview, run_cycle
 from agent.ledger import (
@@ -89,6 +89,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"      {DIM}{channel['capability']} · {channel['description']}{RESET}")
 
     print()
+    directions = data.get("directions", {}).get("directions", [])
+    if directions:
+        print(paint("Три направления:", BOLD))
+        for item in directions:
+            print(f"  {item['share'] * 100:>3.0f}% времени · {item['title']} — {item['status']}")
+        print()
+
     print(paint("Отключено политикой (и почему):", BOLD))
     for channel in data["disabled"]:
         print(f"  {paint('ВЫКЛ', RED)} {channel['title']} — {channel['reason'][:100]}...")
@@ -569,6 +576,79 @@ def cmd_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_directions(args: argparse.Namespace) -> int:
+    from agent.directions import portfolio
+
+    data = portfolio()
+    print(paint("Три направления — работают параллельно", BOLD))
+    print()
+    for item in data["directions"]:
+        print(f"{paint(item['title'], BOLD)}  ·  доля времени ~{item['share'] * 100:.0f}%")
+        print(f"  зачем: {item['promise']}")
+        print(f"  потолок: {item['ceiling']}  ·  вход: {item['entry_cost']}")
+        print(f"  выплата: {item['payout_rail']}")
+        print(f"  сейчас: {item['status']}")
+        print(f"  {DIM}следующий шаг: {item['next_step']}{RESET}")
+        print()
+
+    planned = data["planned"]
+    print(paint("Итоги по всем направлениям:", BOLD))
+    print(f"  Подтверждённый доход {money(planned['verified_usd'])} · "
+          f"часов {planned['hours_logged']} · "
+          f"ставка {money(planned['effective_usd_per_hour'])}/ч")
+    print(f"  Оценка конвейера: {money(planned['pipeline_ev_usd'])}")
+    print()
+    print(paint("Что делать дальше:", BOLD))
+    for line in data["advice"]:
+        print(f"  • {line}")
+    return 0
+
+
+def cmd_payout_rails(args: argparse.Namespace) -> int:
+    assessment = payouts.recommend(args.country)
+    print(paint(f"Как получить деньги — {args.country.upper()}", BOLD))
+    print()
+
+    if assessment.blocked:
+        print(paint("Не работает:", RED))
+        for key in assessment.blocked:
+            rail = payouts.rail(key)
+            if rail:
+                print(f"  ✗ {rail.title} — {rail.summary.splitlines()[0]}")
+        print()
+
+    print(paint("Рабочие каналы (по порядку предпочтения):", BOLD))
+    for key in assessment.recommended:
+        rail = payouts.rail(key)
+        if not rail:
+            continue
+        print()
+        print(f"  {paint(rail.title, GREEN)}")
+        print(f"    {rail.summary}")
+        print(f"    Требуется: {', '.join(rail.requires) or 'ничего особенного'}")
+        print(f"    Стоимость: {rail.costs}")
+        for step in rail.steps:
+            print(f"      · {step}")
+        for risk in rail.breaks_when:
+            print(f"      {DIM}ломается, если: {risk}{RESET}")
+        print(f"      {DIM}источник: {rail.source}{RESET}")
+
+    if assessment.notes:
+        print()
+        print(paint("Важные детали для вашей страны:", BOLD))
+        for note in assessment.notes:
+            print(f"  • {note}")
+
+    print()
+    print(paint("Чек-лист до начала работы:", BOLD))
+    for item in payouts.checklist(args.country):
+        print(f"  ☐ {item}")
+    print()
+    print(f"{DIM}Проверено: {payouts.VERIFIED_ON}. Это не юридическая и не налоговая "
+          f"консультация — уточняйте у местного специалиста.{RESET}")
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from agent.dashboard import serve
 
@@ -639,6 +719,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("report", help="отчёт в reports/")
 
+    sub.add_parser("directions", help="три направления: состояние и распределение времени")
+
+    payout_rails = sub.add_parser("payout-rails", help="как получить деньги в вашей стране")
+    payout_rails.add_argument("--country", required=True)
+
     loop = sub.add_parser("loop", help="автономный режим")
     loop.add_argument("--channel", default=None)
     loop.add_argument("--limit", type=int, default=25)
@@ -679,6 +764,8 @@ HANDLERS = {
     "analytics": cmd_analytics,
     "eligibility": cmd_eligibility,
     "report": cmd_report,
+    "directions": cmd_directions,
+    "payout-rails": cmd_payout_rails,
     "loop": cmd_loop,
     "payout-add": cmd_payout_add,
     "payout-verify": cmd_payout_verify,
