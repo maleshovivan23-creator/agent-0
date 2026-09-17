@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from html import unescape
-from typing import Optional
+from typing import Any, List, Optional
 
 #: Мета-описания страницы: их отдают сами поисковики, поэтому они переживают
 #: любые переделки разметки.
@@ -41,8 +41,17 @@ JSON_LD_RE = re.compile(
 JSON_DESCRIPTION_RE = re.compile(r'\\?"description\\?"\s*:\s*\\?"(?P<text>(?:[^"\\]|\\.)*)\\?"')
 TAG_RE = re.compile(r"<[^>]+>")
 
-#: Сколько текста брать: описание задачи бывает длинным, но в черновик человеку
-#: нужны условия, а не простыня на десять экранов.
+#: Публичный API площадки: отдаёт саму задачу, включая полное описание (до 10 000
+#: знаков), тогда как в разметке страницы лежит только короткая мета-строка.
+#: Адрес вычитан из официального клиента площадки (@lucid-agents/taskmarket).
+API_BASE = "https://api.taskmarket.dev"
+
+#: Сколько текста брать, если площадка отдала всё описание целиком.
+FULL_DESCRIPTION_CHARS = 4000
+
+#: Сколько текста попадает в черновик: условия бывают на десять экранов, а
+#: человеку нужен рабочий текст. Обрезаем умно: начало (что сделать) и конец
+#: (сроки, чек-лист доказательств) — середина описания обычно пересказ.
 MAX_DESCRIPTION_CHARS = 2000
 
 
@@ -57,6 +66,40 @@ def _clean(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def trim_for_human(text: str, limit: int = MAX_DESCRIPTION_CHARS) -> str:
+    """Обрезать описание, сохранив начало и конец.
+
+    Сроки и чек-лист доказательств обычно стоят в конце описания — отрезать их
+    ради экономии места значило бы выбросить самое нужное.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.7)
+    tail = max(0, limit - head - 7)
+    return f"{text[:head].rstrip()}\n…\n{text[-tail:].lstrip()}" if tail else text[:limit]
+
+
+def extract_api_description(payload: Any) -> str:
+    """Описание из ответа API площадки.
+
+    Ответ бывает и объектом, и обёрткой вида ``{"task": {...}}`` — проверяем оба,
+    потому что формат менять может только площадка, а не мы.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    candidates: List[Any] = [payload.get("description")]
+    for key in ("task", "data", "result"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested.get("description"))
+    for value in candidates:
+        text = _clean(str(value or ""))
+        if len(text) >= 40:
+            return trim_for_human(text, FULL_DESCRIPTION_CHARS)
+    return ""
 
 
 def _from_json_ld(html: str) -> str:
@@ -125,6 +168,11 @@ def summarize_page(html: str) -> str:
 
 def task_url(task_id: str, base: str = "https://taskmarket.dev") -> str:
     return f"{base}/tasks/{task_id}"
+
+
+def api_url(task_id: str, base: str = API_BASE) -> str:
+    """Адрес задачи в API площадки: сначала он, страница — запасной вариант."""
+    return f"{base}/api/tasks/{task_id}"
 
 
 def pick_for_detailing(rows: list, limit: int) -> list:

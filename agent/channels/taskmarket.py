@@ -215,8 +215,9 @@ def draft_markdown(opportunity: Dict[str, Any]) -> str:
             "",
             description,
             "",
-            "Снимок страницы, а не гарантия: перед отправкой сверьте условия и "
-            "срок на площадке.",
+            "Условия сняты с площадки целиком; если в тексте есть «…», середина "
+            "описания скрыта — откройте страницу задачи, чтобы прочитать её.",
+
             "",
         ]
     lines += [
@@ -279,6 +280,22 @@ def fetch_detail(task_id: str, session: Any = None) -> str:
     own = session is None
     session = session or build_session("AGENT-0-taskmarket/1.0 (open tasks, read only)")
     try:
+        # Сначала API: страница рисуется на клиенте, и в её разметке лежит только
+        # короткая мета-строка, а сам текст задачи отдаёт /api/tasks/<id>.
+        try:
+            response = session.get(task_detail.api_url(task_id),
+                                   headers={"Accept": "application/json"}, timeout=25)
+            if getattr(response, "status_code", 200) == 200:
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
+                text = task_detail.extract_api_description(payload) if payload else ""
+                if text:
+                    return text
+        except Exception:
+            pass
+
         response = session.get(task_detail.task_url(task_id), timeout=25)
         if getattr(response, "status_code", 200) != 200:
             return ""

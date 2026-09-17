@@ -92,7 +92,7 @@ class FakeSession:
         self.boom = boom
         self.closed = False
 
-    def get(self, url: str, timeout: int = 0) -> FakeResponse:
+    def get(self, url: str, timeout: int = 0, headers: dict | None = None) -> FakeResponse:
         if self.boom:
             raise RuntimeError("network down")
         return FakeResponse(self.text, self.status_code)
@@ -238,7 +238,7 @@ def test_draft_shows_the_conditions_from_the_platform() -> None:
     })
     assert "## Что просит площадка" in text
     assert "Read the rules and submit evidence" in text
-    assert "сверьте условия и срок" in text
+    assert "Условия сняты с площадки" in text
 
 
 def test_draft_without_a_description_has_no_empty_section() -> None:
@@ -247,3 +247,74 @@ def test_draft_without_a_description_has_no_empty_section() -> None:
     text = draft_markdown({"id": "taskmarket:0xrich", "title": "Задача", "reward_usd": 5.0,
                            "payload": {}})
     assert "## Что просит площадка" not in text
+
+
+# --- API площадки: там лежит полный текст, а не мета-строка ---------------------
+
+class FakeJson:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def json(self) -> dict:
+        return self.payload
+
+
+class ApiSession(FakeSession):
+    """Страница-«пустышка», зато API отдаёт полное описание задачи."""
+
+    def __init__(self, description: str) -> None:
+        super().__init__("<html><body>клиент рисует страницу сам</body></html>")
+        self.description = description
+
+    def get(self, url: str, timeout: int = 0, headers: dict | None = None) -> object:
+        if url.startswith(task_detail.API_BASE):
+            return FakeJson({"id": "0xabc", "description": self.description})
+        return FakeResponse(self.text)
+
+
+def test_api_description_wins_over_the_page_meta(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.channels import taskmarket
+
+    long_text = "Improve the CUDA kernels. " + ("Detail " * 500) + "Deadline: 7 October 2026."
+    monkeypatch.setattr(taskmarket, "build_session", lambda *a, **k: ApiSession(long_text))
+
+    text = taskmarket.fetch_detail("0xabc")
+    assert text.startswith("Improve the CUDA kernels")
+    assert "Deadline: 7 October 2026" in text, "конец описания тоже нужен: там сроки"
+    assert len(text) <= task_detail.FULL_DESCRIPTION_CHARS
+
+
+class ApiWithoutDescription(FakeSession):
+    """API отвечает, но описания в нём нет — тогда годится мета-строка страницы."""
+
+    def __init__(self) -> None:
+        super().__init__(META_PAGE)
+
+    def get(self, url: str, timeout: int = 0, headers: dict | None = None) -> object:
+        if url.startswith(task_detail.API_BASE):
+            return FakeJson({"id": "0xabc"})
+        return FakeResponse(self.text)
+
+
+def test_page_is_used_when_the_api_gives_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.channels import taskmarket
+
+    monkeypatch.setattr(taskmarket, "build_session", lambda *a, **k: ApiWithoutDescription())
+    assert "Improve Yukon" in taskmarket.fetch_detail("0xabc")
+
+
+def test_api_wrapper_is_understood() -> None:
+    assert task_detail.extract_api_description({"task": {"description": "a" * 50}})
+
+
+def test_trim_keeps_both_ends_but_not_the_middle() -> None:
+    text = "НАЧАЛО " + ("середина " * 500) + "КОНЕЦ: срок 7 октября"
+    trimmed = task_detail.trim_for_human(text, 400)
+    assert trimmed.startswith("НАЧАЛО")
+    assert trimmed.endswith("КОНЕЦ: срок 7 октября")
+    assert len(trimmed) <= 400 + 8
+    assert "…" in trimmed
+
+
+def test_a_short_description_is_not_touched() -> None:
+    assert task_detail.trim_for_human("коротко", 400) == "коротко"
