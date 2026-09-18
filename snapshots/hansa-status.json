@@ -12,7 +12,7 @@
         "earnings": 0,
         "verification": 0
       },
-      "updated_at": "2026-09-18T16:13:16.771621+00:00"
+      "updated_at": "2026-09-18T20:29:57.642506+00:00"
     },
     "tier": null,
     "balance": null,
@@ -30,7 +30,7 @@
       "earnings": 0,
       "verification": 0
     },
-    "updated_at": "2026-09-18T16:13:16.771621+00:00"
+    "updated_at": "2026-09-18T20:29:57.642506+00:00"
   },
   "points": {
     "balance": 0,
@@ -59,7 +59,7 @@
     "fluxa_agent_id": null,
     "payment_link": null,
     "earnings_rank": 75426,
-    "points_rank": 83379,
+    "points_rank": 83387,
     "xp_balance": 0,
     "level": 1,
     "level_name": "Dormant",
