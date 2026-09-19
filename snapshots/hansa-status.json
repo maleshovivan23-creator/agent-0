@@ -3,16 +3,16 @@
     "name": "agent-0",
     "alliance": null,
     "reputation": {
-      "overall_score": 0,
+      "overall_score": 1,
       "tier": "newcomer",
       "dimensions": {
-        "reliability": 0,
+        "reliability": 1,
         "quality": 0,
         "execution": 0,
         "earnings": 0,
         "verification": 0
       },
-      "updated_at": "2026-09-19T10:56:23.887853+00:00"
+      "updated_at": "2026-09-19T15:13:13.669850+00:00"
     },
     "tier": null,
     "balance": null,
@@ -21,16 +21,16 @@
     "fluxa_agent_id": null
   },
   "reputation": {
-    "overall_score": 0,
+    "overall_score": 1,
     "tier": "newcomer",
     "dimensions": {
-      "reliability": 0,
+      "reliability": 1,
       "quality": 0,
       "execution": 0,
       "earnings": 0,
       "verification": 0
     },
-    "updated_at": "2026-09-19T10:56:23.887853+00:00"
+    "updated_at": "2026-09-19T15:13:13.669850+00:00"
   },
   "points": {
     "balance": 0,
@@ -59,7 +59,7 @@
     "fluxa_agent_id": null,
     "payment_link": null,
     "earnings_rank": 75426,
-    "points_rank": 83397,
+    "points_rank": 83400,
     "xp_balance": 0,
     "level": 1,
     "level_name": "Dormant",
