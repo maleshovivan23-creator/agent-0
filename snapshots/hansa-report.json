@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-18T04:36:05.885093+00:00",
+  "generated_at": "2026-10-18T11:08:11.651513+00:00",
   "run": "scheduled",
   "status": {
     "agent": {
@@ -15,7 +15,7 @@
           "earnings": 0,
           "verification": 0
         },
-        "updated_at": "2026-10-18T03:58:03.732869+00:00"
+        "updated_at": "2026-10-18T10:48:53.206199+00:00"
       },
       "tier": null,
       "balance": null,
@@ -33,7 +33,7 @@
         "earnings": 0,
         "verification": 0
       },
-      "updated_at": "2026-10-18T03:58:03.732869+00:00"
+      "updated_at": "2026-10-18T10:48:53.206199+00:00"
     },
     "points": {
       "balance": 10,
@@ -68,7 +68,7 @@
       "fluxa_agent_id": null,
       "payment_link": null,
       "earnings_rank": 75427,
-      "points_rank": 82333,
+      "points_rank": 82337,
       "xp_balance": 10,
       "level": 1,
       "level_name": "Dormant",
