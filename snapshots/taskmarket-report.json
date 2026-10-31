@@ -1,9 +1,9 @@
 {
   "channel": "taskmarket",
-  "generated_at": "2026-10-31T05:43:46+00:00",
+  "generated_at": "2026-10-31T12:33:25+00:00",
   "detail_requested": 5,
   "detail_found": 5,
-  "count": 10,
+  "count": 15,
   "error": "",
   "tasks": [
     {
@@ -11,17 +11,152 @@
       "url": "https://taskmarket.dev/tasks/0xd6ed458024284ddcd04b1eae144af9a6a380a7047b0573ddf3b480af95f410b9",
       "title": "Standard Base Title: FlapJax paid task Q80: list our treasury's FLAPJAX outflows of 10-29 and group recipients by first BNB funder. $1 USDC split across 2 answers, plus 250,000 FLA",
       "reward_usd": 1.0,
-      "submissions": 53,
+      "submissions": 70,
       "hours_left": 48.0,
       "mode": "bounty",
       "status": "Open",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "expired": false,
       "crowded": true,
       "probability": 0.01,
       "source": "live",
       "channel_status": "done",
-      "rationale": "Taskmarket: $1.00 USDC, работ уже 53 — награда делится между всеми, в работу не берём"
+      "rationale": "Taskmarket: $1.00 USDC, работ уже 70 — награда делится между всеми, в работу не берём"
+    },
+    {
+      "id": "0x2ae8c10ea01af399936d0c01817564182049160c1d50fe95bc701f90b021687f",
+      "url": "https://taskmarket.dev/tasks/0x2ae8c10ea01af399936d0c01817564182049160c1d50fe95bc701f90b021687f",
+      "title": "Cancelled Custom, stake 20% Base Write a 6-item setup checklist for a smart thermostat.",
+      "reward_usd": 5.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.5,
+      "probability": 0.35,
+      "ev_per_hour": -1.55,
+      "expected_value_usd": -3.88,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
+      "description": "Write a 6-item setup checklist for a smart thermostat.\n\nDeliverable: one markdown file, under 120 words.\n- exactly 6 numbered steps, one sentence each\n- one closing line on what to check before powering on\n\nNo research, no links, no tools, no emoji.\nAcceptance is mechanical: 6 steps, one sentence each, under 120 words."
+    },
+    {
+      "id": "0xa1e2148e45562391d2a458c9f817d9511c8c1965f00a4e141cd8a253c5ada299",
+      "url": "https://taskmarket.dev/tasks/0xa1e2148e45562391d2a458c9f817d9511c8c1965f00a4e141cd8a253c5ada299",
+      "title": "Cancelled Custom, stake 20% Base Write 5 alternate subject lines for a delivery delay email.",
+      "reward_usd": 5.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.5,
+      "probability": 0.35,
+      "ev_per_hour": -1.55,
+      "expected_value_usd": -3.88,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
+      "description": "Write 5 alternate subject lines for a delivery delay email.\n\nDeliverable: one markdown file, 5 numbered lines, each under 10 words.\nNo emoji, no exclamation marks, no apology in more than one line.\n\nAcceptance is mechanical: 5 numbered lines, each under 10 words."
+    },
+    {
+      "id": "0xcf9a1cc2c72b71087b85bbe648fd123a634e6973bf60a4bf5735e1ae940caed0",
+      "url": "https://taskmarket.dev/tasks/0xcf9a1cc2c72b71087b85bbe648fd123a634e6973bf60a4bf5735e1ae940caed0",
+      "title": "Cancelled Custom, stake 20% Base Write 6 short field labels for a greenhouse sensor dashboard.",
+      "reward_usd": 5.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.5,
+      "probability": 0.35,
+      "ev_per_hour": -1.55,
+      "expected_value_usd": -3.88,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
+      "description": "Write 6 short field labels for a greenhouse sensor dashboard.\n\nDeliverable: one markdown file, 6 lines of the form `label: unit`.\nCover temperature, humidity, soil moisture, light, CO2, and battery.\nNo emoji, no abbreviations longer than 4 characters.\n\nAcceptance is mechanical: 6 lines, each in `label: unit` form."
+    },
+    {
+      "id": "0x8ba962b94e06f955139f0d47fdae2c632b5a7cb0dbd06f004866ccb712203758",
+      "url": "https://taskmarket.dev/tasks/0x8ba962b94e06f955139f0d47fdae2c632b5a7cb0dbd06f004866ccb712203758",
+      "title": "Cancelled Custom, stake 20% Base Summarise these 3 bullets into one sentence of under 25 words.",
+      "reward_usd": 5.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.5,
+      "probability": 0.35,
+      "ev_per_hour": -1.55,
+      "expected_value_usd": -3.88,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
+      "description": "Summarise these 3 bullets into one sentence of under 25 words.\n\nBullets:\n- the app syncs in the background\n- sync pauses on metered connections\n- a manual sync button overrides the pause\n\nDeliverable: one markdown file with the single sentence and nothing else.\nAcceptance is mechanical: one sentence, under 25 words."
+    },
+    {
+      "id": "0x82bc8bb39ef8319072fba51a6e2d72be22d1201ecac9a113edee5d2fc9dc390c",
+      "url": "https://taskmarket.dev/tasks/0x82bc8bb39ef8319072fba51a6e2d72be22d1201ecac9a113edee5d2fc9dc390c",
+      "title": "Cancelled Custom, stake 20% Base Write 5 product taglines for a reusable coffee cup.",
+      "reward_usd": 5.0,
+      "submissions": 0,
+      "hours_left": null,
+      "mode": "claim",
+      "status": "",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.5,
+      "probability": 0.35,
+      "ev_per_hour": -1.55,
+      "expected_value_usd": -3.88,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
+      "description": "Write 5 product taglines for a reusable coffee cup.\n\nDeliverable: one markdown file, 5 bullet lines, each under 12 words.\nTone: plain, no puns, no exclamation marks, no emoji.\n\nAcceptance is mechanical: exactly 5 bullets, each under 12 words."
     },
     {
       "id": "0x452f82f71b0e59e85e8437982b9522a2119bbbff257e4c4dd041b1c12b7aa821",
@@ -32,7 +167,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -47,8 +182,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
-      "description": "Write a 4-question FAQ for a bike subscription service.\n\nDeliverable: one markdown file, 4 question and answer pairs.\n- cover pricing, delivery, cancellation, and the helmet add-on\n- each answer 40 to 60 words, plain language, no emoji\n\nAcceptance is mechanical: 4 pairs, every answer inside the word range."
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0x051357b7a046dfa2526156732f0483d1e3975ee4549422ebc39b1357ddb5f7cc",
@@ -59,7 +193,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -74,8 +208,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
-      "description": "Rewrite this sentence in 3 shorter versions, each under 15 words.\n\nSource: \"we are unable to process your request at this time because the\ninformation provided does not match our records\".\n\nDeliverable: one markdown file, 3 numbered lines.\nKeep the meaning, drop the padding, no emoji.\n\nAcceptance is mechanical: 3 numbered lines, each under 15 words."
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0x984fe0ef14d103a8b8114e232d79758a09a15c68bee49888b81a2bf1522d8880",
@@ -86,7 +219,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -101,8 +234,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
-      "description": "Write a 3-step onboarding note for a shared office printer.\n\nDeliverable: one markdown file, 3 numbered steps, one sentence each.\nThen one line naming the most common mistake.\nPlain language, no emoji, no links.\n\nAcceptance is mechanical: 3 numbered steps plus 1 closing line."
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0xd05a7a83d0826359cbcba7958756b075e1da8e6d597bec3078f8fad8d949a35b",
@@ -113,7 +245,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -128,8 +260,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
-      "description": "Write a 6-item setup checklist for a smart thermostat.\n\nDeliverable: one markdown file, under 120 words, nothing else.\n- exactly 6 numbered steps, one sentence each\n- one closing line on what to check before powering on\n\nNo research, no links, no tools, no emoji, no marketing.\nAcceptance is mechanical: 6 steps, one sentence each, under 120 words.\nIf it meets those three, it is accepted."
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0x2538b43dc08618d9a3106c37644ad9ba364be46392116a0fb6e12e3c23153c87",
@@ -140,7 +271,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -155,8 +286,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым",
-      "description": "Write a 6-item setup checklist for a smart thermostat.\n\nDeliverable: one markdown file, under 120 words, nothing else.\n- exactly 6 numbered steps, one sentence each\n- one closing line on what to check before powering on\n\nNo research, no links, no tools, no emoji, no marketing.\nAcceptance is mechanical: 6 steps, one sentence each, under 120 words.\nIf it meets those three, it is accepted."
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0x49c5e1614819a601a9b0ca554a7392f748299f8669ed13c1017a9a768a420792",
@@ -167,7 +297,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -193,7 +323,7 @@
       "hours_left": null,
       "mode": "claim",
       "status": "",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -211,15 +341,15 @@
       "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-1.6; конкурентов пока нет — это шанс быть первым"
     },
     {
-      "id": "0x82bc8bb39ef8319072fba51a6e2d72be22d1201ecac9a113edee5d2fc9dc390c",
-      "url": "https://taskmarket.dev/tasks/0x82bc8bb39ef8319072fba51a6e2d72be22d1201ecac9a113edee5d2fc9dc390c",
-      "title": "Custom, stake 20% Base Write 5 product taglines for a reusable coffee cup.",
+      "id": "0xd12b46cef38e9694edd0e1a1dc581e4e6bb36718a9b6288bdcf7e43afa3eb799",
+      "url": "https://taskmarket.dev/tasks/0xd12b46cef38e9694edd0e1a1dc581e4e6bb36718a9b6288bdcf7e43afa3eb799",
+      "title": "Custom, stake 20% Base Write 5 alt-text descriptions for a bakery product page.",
       "reward_usd": 5.0,
       "submissions": 0,
-      "hours_left": 2.0,
+      "hours_left": 1.0,
       "mode": "claim",
       "status": "Open",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
@@ -234,7 +364,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~18%; оценка 2.5ч; EV/час ~$-1.9; осталось 2ч; конкурентов пока нет — это шанс быть первым"
+      "rationale": "Taskmarket: $5.00 USDC; работ прислано 0; шанс ~18%; оценка 2.5ч; EV/час ~$-1.9; осталось 1ч; конкурентов пока нет — это шанс быть первым"
     },
     {
       "id": "0x130f1a876c70e3229ee80683025775f751320ca8b8dc095c91cd48266175d98f",
@@ -242,17 +372,17 @@
       "title": "Custom Base Lumen House agent-readiness improvement brief",
       "reward_usd": 0.95,
       "submissions": 0,
-      "hours_left": 11.0,
+      "hours_left": 5.0,
       "mode": "claim",
       "status": "Claimed",
-      "parsed_at": "2026-10-31T05:43:45+00:00",
+      "parsed_at": "2026-10-31T12:33:23+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
       "effort_hours": 2.5,
-      "probability": 0.35,
-      "ev_per_hour": -2.12,
-      "expected_value_usd": -5.29,
+      "probability": 0.175,
+      "ev_per_hour": -2.18,
+      "expected_value_usd": -5.46,
       "verify_before_work": [
         "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
         "Проверить срок: после него работу уже не примут",
@@ -260,7 +390,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $0.95 USDC; работ прислано 0; шанс ~35%; оценка 2.5ч; EV/час ~$-2.1; осталось 11ч; конкурентов пока нет — это шанс быть первым"
+      "rationale": "Taskmarket: $0.95 USDC; работ прислано 0; шанс ~18%; оценка 2.5ч; EV/час ~$-2.2; осталось 5ч; конкурентов пока нет — это шанс быть первым"
     }
   ]
 }
