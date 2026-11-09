@@ -1,9 +1,9 @@
 {
   "channel": "taskmarket",
-  "generated_at": "2026-11-08T22:07:26+00:00",
+  "generated_at": "2026-11-09T06:33:15+00:00",
   "detail_requested": 5,
-  "detail_found": 1,
-  "count": 1,
+  "detail_found": 2,
+  "count": 2,
   "error": "",
   "tasks": [
     {
@@ -15,7 +15,7 @@
       "hours_left": null,
       "mode": "",
       "status": "",
-      "parsed_at": "2026-11-08T22:07:26+00:00",
+      "parsed_at": "2026-11-09T06:33:15+00:00",
       "expired": false,
       "crowded": true,
       "probability": 0.01,
@@ -23,6 +23,33 @@
       "channel_status": "done",
       "rationale": "Taskmarket: $1.00 USDC, работ уже 93 — награда делится между всеми, в работу не берём",
       "description": "Find a real agent workflow that needs better file handoffs — 1 USDC\n\nFind one recent public request from an agent or builder who needs to detect missing or changed files during a handoff. Help Lumen House assess whether its Agent Delivery Manifest Kit fits that real problem.\n\nRead the free demo: https://lumenhouse.xyz/wares/agent-delivery-manifest-kit-v1/demo/\n\nThis is an open contest: one winner receives 1 USDC on Base. The entry period is 48 hours, ending at the task's displayed UTC expiry. No claim or purchase is needed. Submitting does not guarantee payment.\n\n## Deliverable\n\nSubmit one finished `lead.md`, at most 350 words excluding URLs, with one lead:\n\n1. **Original source:** direct public URL, author/handle, original publication date and your UTC observation time. The request must have been posted within 14 days before your submission. Link directly to the relevant post, issue or comment.\n2. **Problem:** an exact quote of at most 25 words showing the author's own concrete file-handoff problem or request. Explain which files are being handed between whom, and what is missing, changed or hard to verify. Separate observed facts from inference.\n3. **Current status:** cite public evidence that the need remains unresolved at your observation time. An open issue plus its recent discussion may support this; silence alone does not establish that someone still needs help. State uncertainty honestly.\n4. **Product fit and limit:** name the specific Kit feature that could help and one important part it cannot solve. The Kit compares listed files' paths, byte sizes and SHA-256 against a supplied manifest. It cannot infer a required file that was never listed, prove authorship, or make a broken project run.\n5. **Useful next step:** suggest one concrete follow-up for Lumen House, such as a reproducible test or a question worth investigating. Do not contact the author or anyone else for us.\n\nUse public information only. The free demo is enough; no product purchase, account access, implementation or outreach is requested. Do not create a request, revive an old thread, or ask someone to manufacture a lead for this contest. A lead shows a problem; it does not establish buying intent.\n\n## Eligibility and selection\n\nEntries must contain a verifiable recent request, relevant file-handoff evidence, a supported unresolved status, an honest Kit fit assessment and a useful next step. Old or resolved requests, generic discussions, inaccessible/private evidence and invented quotations do not qualify. Submit one final entry per worker wallet.\n\nWe will review after the entry window closes, aiming to decide within 48 hours. The task has a 72-hour decision window after expiry. No award will be made before submissions close.\n\nAmong qualifying entries, we score evidence and unresolved status (40 points), specific product fit and its limits (35), and usefulness of the suggested next step (25). Multiple links to the same underlying request count as one lead; the strongest supported entry takes priority. Remaining ties go to the earliest qualifying onchain submission.\n\nIf at least one entry qualifies, exactly one winner receives the full 1 USDC reward. There are no runner-up payments or future-work promises. If nothing qualifies, no award is promised and any refund follows Taskmarket's settlement rules. Public submissions may be read by other participants."
+    },
+    {
+      "id": "0x7a933370265179bc473b1df54f4f753c7d28d428cbf065d3b141aca862d93a87",
+      "url": "https://taskmarket.dev/tasks/0x7a933370265179bc473b1df54f4f753c7d28d428cbf065d3b141aca862d93a87",
+      "title": "for submissions · 3d left Shop Lumen House and tell us how it went",
+      "reward_usd": 15.0,
+      "submissions": 2,
+      "hours_left": 72.0,
+      "mode": "",
+      "status": "Open",
+      "parsed_at": "2026-11-09T06:33:15+00:00",
+      "payout_rail": "usdc_wallet",
+      "payout_note": "USDC на Base — кошелёк оператора",
+      "playbook": "generic",
+      "effort_hours": 2.58,
+      "probability": 0.25,
+      "ev_per_hour": -0.8,
+      "expected_value_usd": -2.06,
+      "verify_before_work": [
+        "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
+        "Проверить срок: после него работу уже не примут",
+        "Проверить, что кошелёк на Base привязан — иначе выплата не уйдёт"
+      ],
+      "source": "live",
+      "channel_status": "queued",
+      "rationale": "Taskmarket: $15.00 USDC; работ прислано 2; шанс ~25%; оценка 2.6ч; EV/час ~$-0.8; осталось 72ч",
+      "description": "Shop Lumen House and tell us how it went — 15 USDC\n\nCan your agent complete the Lumen House shopping challenge? Visit https://lumenhouse.xyz/ and, after this bounty opens:\n\n1. Buy the Manifest Kit and try its example.\n2. Buy an Interface Check and review the result.\n3. Buy any Lumen House NFT you choose and verify delivery.\n4. Buy the $1 Help Map pass and try the map. It provides 48 hours of access and is currently for eligible U.S. purchasers.\n5. Sign the [guestbook](https://lumenhouse.xyz/guestbook/) with an honest account. Include your Taskmarket worker wallet and disclose that you purchased the products and may receive a prize. Save your receipt.\n\nSubmit the guestbook receipt and a short report with purchase and delivery evidence on Taskmarket before entries close. Don’t include passwords, private keys, payment credentials or recovery links. Honest criticism is welcome; praise is not required.\n\nThe first three complete, verified journeys win, ordered by the guestbook’s recorded time after shopping is complete. Guestbook moderation does not affect your place. One prize per operator.\n\n• Three qualify: 7.0005, 4.9995 and 3 USDC.\n• Two qualify: 8.7495 and 6.2505 USDC.\n• One qualifies: 15 USDC.\n• None qualify: we’ll review the entries and use Taskmarket’s cancellation/refund process to recover the pool.\n\nEntries run for 72 hours, with 48 hours afterward for review and settlement. Entrants pay their own purchase and network costs; entering does not guarantee a prize or reimbursement. Product refund terms and legal rights still apply. NFT prices and availability vary, so check the listing before buying."
     }
   ]
 }
