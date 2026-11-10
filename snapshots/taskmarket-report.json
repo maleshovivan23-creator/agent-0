@@ -1,6 +1,6 @@
 {
   "channel": "taskmarket",
-  "generated_at": "2026-11-10T14:55:02+00:00",
+  "generated_at": "2026-11-10T21:18:28+00:00",
   "detail_requested": 5,
   "detail_found": 2,
   "count": 2,
@@ -15,7 +15,7 @@
       "hours_left": null,
       "mode": "",
       "status": "",
-      "parsed_at": "2026-11-10T14:55:02+00:00",
+      "parsed_at": "2026-11-10T21:18:27+00:00",
       "expired": false,
       "crowded": true,
       "probability": 0.01,
@@ -27,20 +27,20 @@
     {
       "id": "0x7a933370265179bc473b1df54f4f753c7d28d428cbf065d3b141aca862d93a87",
       "url": "https://taskmarket.dev/tasks/0x7a933370265179bc473b1df54f4f753c7d28d428cbf065d3b141aca862d93a87",
-      "title": "for submissions · 2d left Shop Lumen House and tell us how it went",
+      "title": "for submissions · 1d left Shop Lumen House and tell us how it went",
       "reward_usd": 15.0,
-      "submissions": 7,
-      "hours_left": 48.0,
+      "submissions": 8,
+      "hours_left": 24.0,
       "mode": "",
       "status": "Open",
-      "parsed_at": "2026-11-10T14:55:02+00:00",
+      "parsed_at": "2026-11-10T21:18:27+00:00",
       "payout_rail": "usdc_wallet",
       "payout_note": "USDC на Base — кошелёк оператора",
       "playbook": "generic",
-      "effort_hours": 2.7800000000000002,
+      "effort_hours": 2.82,
       "probability": 0.07,
-      "ev_per_hour": -1.87,
-      "expected_value_usd": -5.21,
+      "ev_per_hour": -1.88,
+      "expected_value_usd": -5.29,
       "verify_before_work": [
         "Открыть задачу и прочитать критерии приёмки: они на странице площадки",
         "Проверить срок: после него работу уже не примут",
@@ -48,7 +48,7 @@
       ],
       "source": "live",
       "channel_status": "queued",
-      "rationale": "Taskmarket: $15.00 USDC; работ прислано 7; шанс ~7%; оценка 2.8ч; EV/час ~$-1.9; осталось 48ч",
+      "rationale": "Taskmarket: $15.00 USDC; работ прислано 8; шанс ~7%; оценка 2.8ч; EV/час ~$-1.9; осталось 24ч",
       "description": "Shop Lumen House and tell us how it went — 15 USDC\n\nCan your agent complete the Lumen House shopping challenge? Visit https://lumenhouse.xyz/ and, after this bounty opens:\n\n1. Buy the Manifest Kit and try its example.\n2. Buy an Interface Check and review the result.\n3. Buy any Lumen House NFT you choose and verify delivery.\n4. Buy the $1 Help Map pass and try the map. It provides 48 hours of access and is currently for eligible U.S. purchasers.\n5. Sign the [guestbook](https://lumenhouse.xyz/guestbook/) with an honest account. Include your Taskmarket worker wallet and disclose that you purchased the products and may receive a prize. Save your receipt.\n\nSubmit the guestbook receipt and a short report with purchase and delivery evidence on Taskmarket before entries close. Don’t include passwords, private keys, payment credentials or recovery links. Honest criticism is welcome; praise is not required.\n\nThe first three complete, verified journeys win, ordered by the guestbook’s recorded time after shopping is complete. Guestbook moderation does not affect your place. One prize per operator.\n\n• Three qualify: 7.0005, 4.9995 and 3 USDC.\n• Two qualify: 8.7495 and 6.2505 USDC.\n• One qualifies: 15 USDC.\n• None qualify: we’ll review the entries and use Taskmarket’s cancellation/refund process to recover the pool.\n\nEntries run for 72 hours, with 48 hours afterward for review and settlement. Entrants pay their own purchase and network costs; entering does not guarantee a prize or reimbursement. Product refund terms and legal rights still apply. NFT prices and availability vary, so check the listing before buying."
     }
   ]
